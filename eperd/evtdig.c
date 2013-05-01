@@ -1,28 +1,7 @@
 /*
- * Copyright (c) 2011-2013 RIPE NCC, Antony Antony <antony@ripe.net>, <atlas@ripe.net>
+ * Copyright (c) 2011-2013 RIPE NCC <atlas@ripe.net>
  * Copyright (c) 2009 Rocco Carbone <ro...@tecsiel.it>
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- * 3. The name of the author may not be used to endorse or promote products
- *    derived from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
- * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
- * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
- * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * Licensed under GPLv2 or later, see file LICENSE in this tarball for details.
  */
 
 #include "libbb.h"
@@ -94,6 +73,7 @@
 #define STATUS_TCP_CONNECTING 		1002
 #define STATUS_TCP_CONNECTED 		1003
 #define STATUS_TCP_WRITE 		1004
+#define STATUS_NEXT_QUERY		1005
 #define STATUS_FREE 			0
 
 // seems T_DNSKEY is not defined header files of lenny and sdk
@@ -212,7 +192,7 @@ struct query_state {
 	u_int16_t qtype;
 	u_int16_t qclass;
 
-	unsigned char *lookupname;
+	char *lookupname;
 	char * server_name;
 	char *out_filename ;
 
@@ -222,8 +202,10 @@ struct query_state {
 	struct sockaddr_in remote;     /* store the reply packet src address      */
 
 
-	struct event noreply_timer;    /* Timer to handle timeout            */
-	struct event nsm_timer;        /* Timer to next query intervals   */
+	struct event noreply_timer;    /* Timer to handle timeout */
+	struct event nsm_timer;       /* Timer to send UDP */
+	struct event next_qry_timer;  /* Timer event to start next query */
+
 	struct timeval xmit_time;	
 	double triptime;
 
@@ -362,14 +344,17 @@ static char line[DEFAULT_LINE_LENGTH];
 
 static void tdig_stats(int unused UNUSED_PARAM, const short event UNUSED_PARAM, void *h);
 static int tdig_delete(void *state);
-static void ChangetoDnsNameFormat(u_char * dns,unsigned char* qry) ;
+static void ChangetoDnsNameFormat(u_char *dns, char * qry) ;
 struct tdig_base *tdig_base_new(struct event_base *event_base); 
 void tdig_start (struct query_state *qry);
-void printReply(struct query_state *qry, int wire_size, unsigned char *result );
-static void done(void *state);
+void printReply(struct query_state *qry, int wire_size, unsigned char *result);
+void printErrorQuick (struct query_state *qry);
+static void local_exit(void *state);
 static void *tdig_init(int argc, char *argv[], void (*done)(void *state));
 static void process_reply(void * arg, int nrecv, struct timeval now, int af, void *remote);
 static void mk_dns_buff(struct query_state *qry,  u_char *packet);
+int ip_addr_cmp (u_int16_t af_a, void *a, u_int16_t af_b, void *b);
+static void udp_dns_cb(int err, struct evutil_addrinfo *ev_res, struct query_state *qry);
 
 /* move the next functions from tdig.c */
 u_int32_t get32b (char *p);
@@ -392,7 +377,7 @@ int evtdig_main(int argc, char **argv)
 		crondlog(LVL9 "event_base_new failed"); /* exits */
 	}
 
-	qry = tdig_init(argc, argv, done);
+	qry = tdig_init(argc, argv, NULL);
 	if(!qry) {
 		crondlog(DIE9 "evdns_base_new failed"); /* exits */
 		event_base_free	(EventBase);
@@ -438,7 +423,7 @@ void print_txt_json(unsigned char *rdata, int txt_len, FILE *fh)
         fprintf(fh, "\"");
 }
 
-static void done(void *state UNUSED_PARAM)
+static void local_exit(void *state UNUSED_PARAM)
 {
 	//fprintf(stderr, "And we are done\n");
 	exit(0);
@@ -540,6 +525,9 @@ static void mk_dns_buff(struct query_state *qry,  u_char *packet)
 	struct EDNS0_HEADER *e;
 	struct EDNS_NSID *n;
 	int r;
+	struct buf pbuf;
+	char *lookup_prepend;
+	int probe_id;
 
 	dns = (struct DNS_HEADER *)packet;
 	r =  random();
@@ -572,8 +560,23 @@ static void mk_dns_buff(struct query_state *qry,  u_char *packet)
 
 	//point to the query portion
 	qname =(u_char *)&packet[sizeof(struct DNS_HEADER)];
-	ChangetoDnsNameFormat(qname, qry->lookupname); // fill the query portion.
 
+	// should it be limited to clas C_IN ? 
+	if(qry->opt_prepend_probe_id ) {
+		probe_id = get_probe_id();
+		probe_id =  MAX(probe_id, 0);
+
+
+		lookup_prepend = xzalloc(DEFAULT_LINE_LENGTH +  sizeof(qry->lookupname));
+		snprintf(lookup_prepend, (sizeof(qry->lookupname) + DEFAULT_LINE_LENGTH - 1),  "%d.%lu.%s", probe_id, qry->xmit_time.tv_sec, qry->lookupname);
+
+		ChangetoDnsNameFormat(qname, lookup_prepend); // fill the query portion.
+
+		free(lookup_prepend);
+	}
+	else {
+		ChangetoDnsNameFormat(qname, qry->lookupname); // fill the query portion.
+	}
 	qinfo =(struct QUESTION*)&packet[sizeof(struct DNS_HEADER) + (strlen((const char*)qname) + 1)]; 
 
 	qinfo->qtype = htons(qry->qtype);
@@ -614,7 +617,6 @@ static void mk_dns_buff(struct query_state *qry,  u_char *packet)
 		dns->add_count = htons(1);
 		/* Transmit the request over the network */
 	}
-	struct buf pbuf;
 	buf_init(&pbuf, -1);
 
 	if(qry->pktsize) {
@@ -642,7 +644,7 @@ static void tdig_send_query_callback(int unused UNUSED_PARAM, const short event 
 {
 	struct query_state *qry = h;
 	struct tdig_base *base = qry->base;
-	uint32_t nsent;
+	uint32_t nsent = 0;
 	u_char *outbuff;
 	int err = 0; 
 	int sockfd;
@@ -653,9 +655,9 @@ static void tdig_send_query_callback(int unused UNUSED_PARAM, const short event 
 	outbuff = xzalloc(MAX_DNS_OUT_BUF_SIZE);
 	bzero(outbuff, MAX_DNS_OUT_BUF_SIZE);
 	//AA delete qry->outbuff = outbuff;
+	gettimeofday(&qry->xmit_time, NULL);
 	mk_dns_buff(qry, outbuff);
 	do {
-		gettimeofday(&qry->xmit_time, NULL);
 		switch (qry->res->ai_family) {
 			case AF_INET:
 				nsent = sendto(base->rawfd_v4, outbuff,qry->pktsize, MSG_DONTWAIT, qry->res->ai_addr, qry->res->ai_addrlen);
@@ -673,7 +675,7 @@ static void tdig_send_query_callback(int unused UNUSED_PARAM, const short event 
 			if ((sockfd = socket(qry->res->ai_family, SOCK_DGRAM, 0 ) ) < 0 ) { 
                                         snprintf(line, DEFAULT_LINE_LENGTH, "%s \"socket\" : \"temp socket to get src address failed %s\"", qry->err.size ? ", " : "", strerror(errno));
                                         buf_add(&qry->err, line, strlen(line));
-				return NULL;
+				return;
         		}
 			else  {
 				qry->loc_socklen = sizeof(qry->loc_sin6);
@@ -712,6 +714,13 @@ static void tdig_send_query_callback(int unused UNUSED_PARAM, const short event 
 		return;
 	}
 }
+
+static void next_qry_cb(int unused  UNUSED_PARAM, const short event UNUSED_PARAM, void *h) {
+	struct query_state *qry = h;
+	BLURT(LVL5 "next query for %s",  qry->server_name);
+	tdig_start(qry);  
+}
+
 /* The callback to handle timeouts due to destination host unreachable condition */
 static void noreply_callback(int unused  UNUSED_PARAM, const short event UNUSED_PARAM, void *h)
 {
@@ -829,7 +838,6 @@ static void tcp_readcb(struct bufferevent *bev UNUSED_PARAM, void *ptr)
 
         struct query_state *qry = ptr;
         int n;
-	int to_read;
         u_char b2[2];
         struct timeval rectime;
         struct evbuffer *input ;
@@ -839,8 +847,13 @@ static void tcp_readcb(struct bufferevent *bev UNUSED_PARAM, void *ptr)
 	BLURT(LVL5 "TCP readcb %s", qry->server_name );
 
 	if( qry->packet.size && (qry->packet.size >= qry->wire_size)) {
-			bufferevent_free(bev);
-			return;
+		snprintf(line, DEFAULT_LINE_LENGTH, "%s \"TCPREADSIZE\" : "
+				" \"red more bytes than expected %d, got %zu\""
+				, qry->err.size ? ", " : ""
+				, qry->wire_size, qry->packet.size);
+		buf_add(&qry->err, line, strlen(line));	
+		printReply (qry, 0, NULL);
+		return;
 	}
 
         gettimeofday(&rectime, NULL);
@@ -883,8 +896,10 @@ static void tcp_readcb(struct bufferevent *bev UNUSED_PARAM, void *ptr)
 
 static void tcp_writecb(struct bufferevent *bev, void *ptr) 
 {
+	/*
 	struct query_state * qry; 
 	qry = ENV2QRY(ptr); 
+	*/
 	BLURT(LVL5 "TCP writecb");
 }
 
@@ -943,11 +958,8 @@ static void ready_callback4 (int unused UNUSED_PARAM, const short event UNUSED_P
 	struct tdig_base *base = arg;
 	int nrecv;
 	struct sockaddr_in remote4;                  /* responding internet address */
-	struct sockaddr_in6 remote6; 
 	socklen_t slen;
 	struct timeval rectime;
-	remote6.sin6_family = 0;
-	remote6.sin6_port = 0;
 	
 	slen = sizeof(struct sockaddr);
 	bzero(base->packet, MAX_DNS_BUF_SIZE);
@@ -974,11 +986,7 @@ static void ready_callback6 (int unused UNUSED_PARAM, const short event UNUSED_P
 	struct iovec iov[1];
 	//char buf[INET6_ADDRSTRLEN];
 	struct sockaddr_in6 remote6;
-	struct sockaddr_in remote4;
 	char cmsgbuf[256];
-
-	remote4.sin_family =  0;
-	remote4.sin_port =  0;
 
 	/* Time the packet has been received */
 	gettimeofday(&rectime, NULL);
@@ -1011,7 +1019,6 @@ static void *tdig_init(int argc, char *argv[], void (*done)(void *state))
 	char *check;
 	struct query_state *qry;
 	int c;
-	int opt_v4_only, opt_v6_only;
 
 	if(!tdig_base)
 		tdig_base = tdig_base_new(EventBase);
@@ -1022,7 +1029,6 @@ static void *tdig_init(int argc, char *argv[], void (*done)(void *state))
 	tdig_base->done = done;
 
 	qry=xzalloc(sizeof(*qry));
-	opt_v4_only =  opt_v6_only = 0;
 
 	// initialize per query state variables;
 	qry->qtype = T_TXT; /* TEXT */
@@ -1058,11 +1064,17 @@ static void *tdig_init(int argc, char *argv[], void (*done)(void *state))
 	qry->loc_ai_family = 0;
 	qry->loc_sin6.sin6_family = 0;
 
-	/* initialize callbacks: no reply timeout and sendpacket */
+	/* initialize callbacks : */
+	/* sendpacket  called by UDP send */
 	evtimer_assign(&qry->nsm_timer, tdig_base->event_base,
 		tdig_send_query_callback, qry);
+	/* no reply timeout for udp  queries */
 	evtimer_assign(&qry->noreply_timer, tdig_base->event_base,
 		noreply_callback, qry); 
+
+	/* callback/timer used for restarting query by --resove */
+	evtimer_assign(&qry->next_qry_timer, tdig_base->event_base, next_qry_cb
+			                ,qry);
 
 	optind = 0;
 	while (c= getopt_long(argc, argv, "46adD:e:tbhinqO:Rrs:A:?", longopts, NULL), c != -1) {
@@ -1085,7 +1097,7 @@ static void *tdig_init(int argc, char *argv[], void (*done)(void *state))
 				qry->str_Atlas = strdup(optarg);
 				break;
 			case 'b':
-				qry->lookupname  = (u_char *) strdup ("version.bind.");
+				qry->lookupname = strdup ("version.bind.");
 				break;
 		
 			case 'd':
@@ -1097,11 +1109,11 @@ static void *tdig_init(int argc, char *argv[], void (*done)(void *state))
 				break;
 
 			case 'h':
-				qry->lookupname = (u_char *) strdup("hostname.bind.");
+				qry->lookupname = strdup("hostname.bind.");
 				break;
 
 			case 'i':
-				qry->lookupname = (u_char *) strdup("id.server.");
+				qry->lookupname = strdup("id.server.");
 				break;
 
 			case 'n':
@@ -1113,7 +1125,7 @@ static void *tdig_init(int argc, char *argv[], void (*done)(void *state))
 				break;
 
 			case 'r':
-				qry->lookupname = (u_char *) strdup("version.server.");
+				qry->lookupname = strdup("version.server.");
 				break;
 
 			case 'R':
@@ -1123,7 +1135,7 @@ static void *tdig_init(int argc, char *argv[], void (*done)(void *state))
 			case 's':
 				qry->qtype = T_SOA;
 				qry->qclass = C_IN;
-				qry->lookupname =  (u_char *) strdup(optarg);
+				qry->lookupname = strdup(optarg);
 				break;
 
 			case 't':
@@ -1155,85 +1167,85 @@ static void *tdig_init(int argc, char *argv[], void (*done)(void *state))
 			case (100000 + T_A):
 				qry->qtype = T_A;
 				qry->qclass = C_IN;
-				qry->lookupname =  (u_char *) strdup(optarg);
+				qry->lookupname = strdup(optarg);
 				break;
 
 			case (100000 + T_NS):
 				qry->qtype = T_NS;
 				qry->qclass = C_IN;
-				qry->lookupname =  (u_char *) strdup(optarg);
+				qry->lookupname = strdup(optarg);
 				break;
 
 			case (100000 + T_CNAME):
 				qry->qtype = T_CNAME;
 				qry->qclass = C_IN;
-				qry->lookupname =  (u_char *) strdup(optarg);
+				qry->lookupname = strdup(optarg);
 				break;
 
 			case (100000 + T_PTR):
 				qry->qtype = T_PTR;
 				qry->qclass = C_IN;
-				qry->lookupname =  (u_char *) strdup(optarg);
+				qry->lookupname = strdup(optarg);
 				break;
 
 			case (100000 + T_MX):
 				qry->qtype = T_MX;
 				qry->qclass = C_IN;
-				qry->lookupname =  (u_char *) strdup(optarg);
+				qry->lookupname = strdup(optarg);
 				break;
 
 			case (100000 + T_TXT):
 				qry->qtype = T_TXT;
 				qry->qclass = C_IN;
-				qry->lookupname =  (u_char *) strdup(optarg);
+				qry->lookupname =  strdup(optarg);
 				break;
 
 			case (100000 + T_AAAA ):
 				qry->qtype = T_AAAA ;
 				qry->qclass = C_IN;
-				qry->lookupname =  (u_char *) strdup(optarg);
+				qry->lookupname = strdup(optarg);
 				break;
 
 			case (100000 + T_AXFR ):
 				qry->qtype = T_AXFR ;
 				qry->qclass = C_IN;
-				qry->lookupname =  (u_char *) strdup(optarg);
+				qry->lookupname = strdup(optarg);
 				break;
 
 			case (100000 + T_ANY):
 				qry->qtype = T_ANY ;
 				qry->qclass = C_IN;
-				qry->lookupname =  (u_char *) strdup(optarg);
+				qry->lookupname = strdup(optarg);
 				break;
 
 			case (100000 + T_DS):
 				qry->qtype = T_DS;
 				qry->qclass = C_IN;
-				qry->lookupname  = (u_char *) strdup(optarg);
+				qry->lookupname  = strdup(optarg);
 				break;
 
 			case (100000 + T_NSEC):
 				qry->qtype = T_NSEC;
 				qry->qclass = C_IN;
-				qry->lookupname  = (u_char *) strdup(optarg);
+				qry->lookupname = strdup(optarg);
 				break;
 
 			case (100000 + T_NSEC3):
 				qry->qtype = T_NSEC3;
 				qry->qclass = C_IN;
-				qry->lookupname  = (u_char *) strdup(optarg);
+				qry->lookupname = strdup(optarg);
 				break;
 
 			case (100000 + T_DNSKEY):
 				qry->qtype = T_DNSKEY;
 				qry->qclass = C_IN;
-				qry->lookupname  = (u_char *) strdup(optarg);
+				qry->lookupname = strdup(optarg);
 				break;
 
 			case (100000 + T_RRSIG):
 				qry->qtype = T_RRSIG;
 				qry->qclass = C_IN;
-				qry->lookupname  = (u_char *) strdup(optarg);
+				qry->lookupname = strdup(optarg);
 				break;break;
 
 			default:
@@ -1284,20 +1296,6 @@ static void *tdig_init(int argc, char *argv[], void (*done)(void *state))
 		return NULL;
 	}
 
-	// should it be limited to clas C_IN ? 
-	if(qry->opt_prepend_probe_id ) 
-	{	
-		int probe_id;
-		struct timeval c_time;
-		gettimeofday(&c_time, NULL);
-		probe_id = get_probe_id();
-		probe_id =  MAX(probe_id, 0);
-		unsigned char *tmp_l;
-		tmp_l = strdup(qry->lookupname);
-		qry->lookupname = xzalloc(DEFAULT_LINE_LENGTH +  sizeof(tmp_l));
-		snprintf(qry->lookupname, (sizeof(tmp_l) + DEFAULT_LINE_LENGTH - 1),  "%d.%lu.%s", probe_id, c_time.tv_sec, tmp_l);
-		free(tmp_l);
-	}
 
 	if(qry->opt_v6_only  == 0)
 	{
@@ -1428,18 +1426,29 @@ static void udp_dns_cb(int err, struct evutil_addrinfo *ev_res, struct query_sta
 	else {
 		qry->res = ev_res;
 		qry->ressave = ev_res;
-		tdig_send_query_callback(NULL, NULL, qry);
+		tdig_send_query_callback(0, 0, qry);
 	}
 }
 
 void tdig_start (struct query_state *qry)
 {
 	struct timeval asap = { 0, 0 };
+	struct timeval interval;
 
 	int err_num;
 	struct addrinfo hints, *res;
 	char port[] = "domain";
 	char port_as_char[] = "53";  
+
+	switch(qry->qst)
+	{
+		case STATUS_NEXT_QUERY :
+		case  STATUS_FREE :
+			break;
+		default:
+			printErrorQuick(qry);
+			return ;
+	}
 
 	if(qry->opt_resolv_conf > tdig_base->resolv_max) {
 		qry->opt_resolv_conf = 0;
@@ -1480,11 +1489,11 @@ void tdig_start (struct query_state *qry)
 			// using getaddrinfo; blocking call
 			if ( ( err_num  = getaddrinfo(qry->server_name, port , &hints, &res)))
 			{
-				qry->qst = STATUS_FREE;
 				snprintf(line, DEFAULT_LINE_LENGTH, "%s \"getaddrinfo\": \"port %s, AF %d %s\"", qry->err.size ? ", " : "",  port,  hints.ai_family, gai_strerror(err_num));
 				buf_add(&qry->err, line, strlen(line));
 
 				printReply (qry, 0, NULL);
+				qry->qst = STATUS_FREE;
 				return ;
 			}
 
@@ -1498,7 +1507,6 @@ void tdig_start (struct query_state *qry)
 
 		qry->wire_size =  0;
 		crondlog(LVL5 "TCP QUERY %s", qry->server_name);
-		struct timeval interval;
 		interval.tv_sec = CONN_TO;
 		interval.tv_usec= 0;
 		tu_connect_to_name (&qry->tu_env,   qry->server_name, port_as_char,
@@ -1578,12 +1586,10 @@ static void tdig_stats(int unusg_statsed UNUSED_PARAM, const short event UNUSED_
 }
 
 
-static void ChangetoDnsNameFormat(u_char *  dns,unsigned char* qry)
+static void ChangetoDnsNameFormat(u_char *  dns, char* qry)
 {
-	char *s;
 	int lock = 0, i;
 
-	s = dns;
 	for(i = 0 ; i < (int)strlen((char*)qry) ; i++)
 	{
 		//printf ("%c", qry[i] );
@@ -1602,11 +1608,7 @@ static void ChangetoDnsNameFormat(u_char *  dns,unsigned char* qry)
 
 static void free_qry_inst(struct query_state *qry)
 {
-
-	void (*terminator)(void *state);
-	struct event_base *event_base;
-	struct tdig_base *tbase;
-
+	struct timeval asap = { 0, 0 };
 	BLURT(LVL5 "freeing instance of %s ", qry->server_name);
 
 	if(qry->err.size) 
@@ -1628,7 +1630,7 @@ static void free_qry_inst(struct query_state *qry)
 		qry->ressent = NULL;
 	}
 	qry->qst = STATUS_FREE;
-	qry->wire_size == 0;
+	qry->wire_size = 0;
 
 	if(qry->packet.size)
 	{
@@ -1645,7 +1647,8 @@ static void free_qry_inst(struct query_state *qry)
 			free (qry->server_name);
 			qry->server_name = strdup(tdig_base->nslist[qry->opt_resolv_conf]);
 			qry->opt_resolv_conf++;
-			tdig_start(qry);  
+			qry->qst = STATUS_NEXT_QUERY;
+			evtimer_add(&qry->next_qry_timer, &asap);
 			return;
 		}
 		else 
@@ -1656,6 +1659,9 @@ static void free_qry_inst(struct query_state *qry)
 	{
 		qry->base->done(qry);
 	/*
+		void (*terminator)(void *state);
+		struct event_base *event_base;
+		struct tdig_base *tbase;
 		terminator = qry->base->done;
 		event_base = qry->base->event_base;
 		if(DnsBase) {
@@ -1735,13 +1741,45 @@ static int tdig_delete(void *state)
 	return 1;
 } 
 
+void printErrorQuick (struct query_state *qry)
+{
+	FILE *fh; 
+	struct timeval now;
+	if (qry->out_filename)
+	{
+		fh= fopen(qry->out_filename, "a");
+		if (!fh)
+			crondlog(DIE9 "unable to append to '%s'",
+					qry->out_filename);
+	}
+	else
+		fh = stdout;
+
+	fprintf(fh, "RESULT { ");
+	if(qry->str_Atlas) 
+	{
+		JS(id,  qry->str_Atlas);
+	}
+	gettimeofday(&now, NULL);
+	JS1(time, %ld,  now.tv_sec);
+
+	snprintf(line, DEFAULT_LINE_LENGTH, "\"query busy\": \"too frequent. previous one is not done yet\"");
+	fprintf(fh, "\"error\" : { %s }" , line);
+
+	fprintf(fh, " }");
+	fprintf(fh, "\n");
+	if (qry->out_filename)
+		fclose(fh);
+}
+
+
 void printReply(struct query_state *qry, int wire_size, unsigned char *result )
 {
 	int i, stop=0;
 	unsigned char *qname, *reader;
 	struct DNS_HEADER *dnsR = NULL;
 	struct RES_RECORD answers[20]; //the replies from the DNS server
-	void *ptr;
+	void *ptr = NULL;
 	char addrstr[100];
 	FILE *fh; 
 	//char buf[INET6_ADDRSTRLEN];
@@ -1750,6 +1788,7 @@ void printReply(struct query_state *qry, int wire_size, unsigned char *result )
 	char str[4]; 
 	int iMax ;
 	int flagAnswer = 1;
+	int data_len;
 
 	if (qry->out_filename)
 	{
@@ -1875,7 +1914,7 @@ void printReply(struct query_state *qry, int wire_size, unsigned char *result )
 				if(ntohs(answers[i].resource->type)==T_TXT) //txt
 				{
 					answers[i].rdata =  NULL;
-					int data_len = ntohs(answers[i].resource->data_len) - 1;
+					data_len = ntohs(answers[i].resource->data_len) - 1;
 
 					if(flagAnswer) {
 						fprintf (fh, ", \"answers\" : [ ");
@@ -1969,7 +2008,6 @@ unsigned char* ReadName(unsigned char *base, size_t size, size_t offset,
 {
 	unsigned char *name;
 	unsigned int p=0,jumped=0, len;
-	int i , j;
 
 	*count = 0;
 	name = (unsigned char*)malloc(256);
@@ -2089,6 +2127,5 @@ ldns_read_uint16(const void *src)
         return ((uint16_t) p[0] << 8) | (uint16_t) p[1];
 #endif
 }
-
 
 struct testops tdig_ops = { tdig_init, tdig_start, tdig_delete }; 
