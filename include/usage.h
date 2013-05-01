@@ -2521,18 +2521,6 @@
      "\n	-a      Display all pages" \
      "\n	-w	Show page locations" \
 
-#define atlasinit_trivial_usage \
-	"[OPTION]...[MANPAGE]..."
-
-#define atlasinit_full_usage \
-	"atlasinit filename"
-
-#define atlasserial_trivial_usage \
-	"[OPTION]...[MANPAGE]..."
-
-#define atlasserial_full_usage \
-	"atlasserial "
-
 #define matchpathcon_trivial_usage \
        "[-n] [-N] [-f file_contexts_file] [-p prefix] [-V]"
 #define matchpathcon_full_usage "\n\n" \
@@ -3072,10 +3060,6 @@
 #define od_full_usage "\n\n" \
        "Write an unambiguous representation, octal bytes by default, of FILE\n" \
        "to standard output. With no FILE or when FILE is -, read standard input."
-
-#define ooqd_trivial_usage \
-       "<queue-file>"
-#define ooqd_full_usage \
 
 #define openvt_trivial_usage \
        "[-c NUM] [-sw] [COMMAND [ARGS]]"

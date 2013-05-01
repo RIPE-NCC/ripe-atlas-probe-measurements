@@ -47,20 +47,6 @@ config ARPING
 	help
 	  Ping hosts by ARP packets.
 
-config ATLASINIT
-	bool "atlasinit"
-	default n
-	help
-	RIPE NCC Atlas initialization and parsing applicaton.
-	antony@rip.net. Aug 2010.
-
-config ATLASSERIAL
-	bool "atlasserial"
-	default n
-	help
-	RIPE NCC Atlas serialloop. antony@rip.net. Aug 2010.
-
-
 config AUTOSSH
         bool "autossh"
         default n

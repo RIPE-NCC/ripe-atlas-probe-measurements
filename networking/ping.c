@@ -29,9 +29,6 @@
 #include <netinet/ip_icmp.h>
 #include "libbb.h"
 
-#define ATLAS 1
-#define WATCHDOGDEV "/dev/watchdog"
-
 #if ENABLE_PING6
 #include <netinet/icmp6.h>
 /* I see RENUMBERED constants in bits/in.h - !!?
@@ -51,21 +48,6 @@ enum {
 	MAXWAIT = 10,
 	PINGINTERVAL = 1, /* 1 second */
 };
-
-#ifdef ATLAS
-#define create_icmp_socket() local_create_icmp_socket()
-#define create_icmp6_socket() local_create_icmp6_socket()
-#define xbind(fd, addr, len) xrbind(fd, addr, len, ping_report_err)
-#define xsendto(fd, buf, len, addr, addrlen) \
-	Xxrsendto(fd, buf, len, addr, addrlen, ping_report_err)
-
-static int local_create_icmp_socket(void) FAST_FUNC;
-static int local_create_icmp6_socket(void) FAST_FUNC;
-static void ping_report_err(int err);
-static void ping_report_reserr(const char *hn);
-#else
-#define ping_report_err	0
-#endif /* ATLAS */
 
 /* common routines */
 
@@ -119,20 +101,14 @@ static void ping4(len_and_sockaddr *lsa)
 	pkt->icmp_type = ICMP_ECHO;
 	pkt->icmp_cksum = in_cksum((unsigned short *) pkt, sizeof(packet));
 
-	c = rsendto(pingsock, packet, DEFDATALEN + ICMP_MINLEN,
-	   (struct sockaddr *) &pingaddr, sizeof(pingaddr), ping_report_err);
-	if (c == -1)
-		return;
+	c = xsendto(pingsock, packet, DEFDATALEN + ICMP_MINLEN,
+			   (struct sockaddr *) &pingaddr, sizeof(pingaddr));
 
 	/* listen for replies */
 	while (1) {
 		struct sockaddr_in from;
 		socklen_t fromlen = sizeof(from);
 
-		if (need_to_exit)
-			break;
-
-printf("%s, %d: recvfrom, need_to_exit %d\n", __FILE__, __LINE__, need_to_exit);
 		c = recvfrom(pingsock, packet, sizeof(packet), 0,
 				(struct sockaddr *) &from, &fromlen);
 		if (c < 0) {
@@ -162,8 +138,6 @@ static void ping6(len_and_sockaddr *lsa)
 	char packet[DEFDATALEN + MAXIPLEN + MAXICMPLEN];
 
 	pingsock = create_icmp6_socket();
-	if (pingsock == -1)
-		return;
 	pingaddr = lsa->u.sin6;
 
 	pkt = (struct icmp6_hdr *) packet;
@@ -180,9 +154,6 @@ static void ping6(len_and_sockaddr *lsa)
 	while (1) {
 		struct sockaddr_in6 from;
 		socklen_t fromlen = sizeof(from);
-
-		if (need_to_exit)
-			break;
 
 		c = recvfrom(pingsock, packet, sizeof(packet), 0,
 				(struct sockaddr *) &from, &fromlen);
@@ -253,7 +224,7 @@ int ping_main(int argc UNUSED_PARAM, char **argv)
 
 /* full(er) version */
 
-#define OPT_STRING ("!qvc:s:w:W:I:A:4D" USE_PING6("6"))
+#define OPT_STRING ("qvc:s:w:W:I:4" USE_PING6("6"))
 enum {
 	OPT_QUIET = 1 << 0,
 	OPT_VERBOSE = 1 << 1,
@@ -262,10 +233,8 @@ enum {
 	OPT_w = 1 << 4,
 	OPT_W = 1 << 5,
 	OPT_I = 1 << 6,
-	OPT_A = 1 << 7,
-	OPT_IPV4 = 1 << 8,
-	OPT_D_WATCHDOG = 1 << 9,
-	OPT_IPV6 = (1 << 10) * ENABLE_PING6,
+	OPT_IPV4 = 1 << 7,
+	OPT_IPV6 = (1 << 8) * ENABLE_PING6,
 };
 
 
@@ -273,9 +242,6 @@ struct globals {
 	int pingsock;
 	int if_index;
 	char *str_I;
-	char *str_Atlas;
-	int need_to_exit;
-	int send_error;
 	len_and_sockaddr *source_lsa;
 	unsigned datalen;
 	unsigned pingcount; /* must be int-sized */
@@ -302,9 +268,6 @@ struct globals {
 #define if_index     (G.if_index    )
 #define source_lsa   (G.source_lsa  )
 #define str_I        (G.str_I       )
-#define str_Atlas    (G.str_Atlas   )
-#define need_to_exit (G.need_to_exit)
-#define send_error   (G.send_error)
 #define datalen      (G.datalen     )
 #define ntransmitted (G.ntransmitted)
 #define nreceived    (G.nreceived   )
@@ -328,14 +291,7 @@ void BUG_ping_globals_too_big(void);
 	pingsock = -1; \
 	datalen = DEFDATALEN; \
 	timeout = MAXWAIT; \
-	tsum = 0; \
 	tmin = UINT_MAX; \
-	tmax = 0; \
-	need_to_exit = 0; \
-	send_error = 0; \
-	ntransmitted = 0; \
-	nreceived = 0; \
-	nrepeats = 0; \
 } while (0)
 
 
@@ -346,26 +302,12 @@ void BUG_ping_globals_too_big(void);
 #define	TST(bit)	(A(bit) & B(bit))
 
 /**************************************************************************/
-#ifdef ATLAS
-static void req_exit(int sig UNUSED_PARAM)
-{
-	need_to_exit= 1;
 
-	/* Reset the alarm in case of a race condition */
-	alarm(1);
-}
-#endif
-
-static void print_stats(void)
+static void print_stats_and_exit(int junk) NORETURN;
+static void print_stats_and_exit(int junk UNUSED_PARAM)
 {
 	signal(SIGINT, SIG_IGN);
 
-	if (send_error)
-		return;
-
-#ifdef ATLAS
-        printf("%lu %lu %lu", ntransmitted, nreceived, nrepeats);
-#else
 	printf("\n--- %s ping statistics ---\n", hostname);
 	printf("%lu packets transmitted, ", ntransmitted);
 	printf("%lu packets received, ", nreceived);
@@ -374,26 +316,13 @@ static void print_stats(void)
 	if (ntransmitted)
 		ntransmitted = (ntransmitted - nreceived) * 100 / ntransmitted;
 	printf("%lu%% packet loss\n", ntransmitted);
-#endif
 	if (tmin != UINT_MAX) {
 		unsigned tavg = tsum / (nreceived + nrepeats);
-#ifdef ATLAS
-		printf(" %u.%03u %u.%03u %u.%03u",
-#else
 		printf("round-trip min/avg/max = %u.%03u/%u.%03u/%u.%03u ms\n",
-#endif 
 			tmin / 1000, tmin % 1000,
 			tavg / 1000, tavg % 1000,
 			tmax / 1000, tmax % 1000);
 	}
-	printf  ("\n");
-}
-
-static void print_stats_and_exit(int junk) NORETURN;
-static void print_stats_and_exit(int junk UNUSED_PARAM)
-{
-	print_stats();
-
 	/* if condition is true, exit with 1 -- 'failure' */
 	exit(nreceived == 0 || (deadline && nreceived < pingcount));
 }
@@ -401,28 +330,15 @@ static void print_stats_and_exit(int junk UNUSED_PARAM)
 static void sendping_tail(void (*sp)(int), const void *pkt, int size_pkt)
 {
 	int sz;
-#ifdef ATLAS
-	struct sigaction sa;
-#endif
 
 	CLR((uint16_t)ntransmitted % MAX_DUP_CHK);
 	ntransmitted++;
 
 	/* sizeof(pingaddr) can be larger than real sa size, but I think
 	 * it doesn't matter */
-	sz = rsendto(pingsock, pkt, size_pkt, &pingaddr.sa, sizeof(pingaddr),
-		ping_report_err);
-	if (sz == -1)
-	{
-		need_to_exit= 1;
-		send_error= 1;
-		return;
-	}
+	sz = xsendto(pingsock, pkt, size_pkt, &pingaddr.sa, sizeof(pingaddr));
 	if (sz != size_pkt)
-	{
 		bb_error_msg_and_die(bb_msg_write_error);
-		printf ("ERRROR AA\n");
-	}
 
 	if (pingcount == 0 || deadline || ntransmitted < pingcount) {
 		/* Didn't send all pings yet - schedule next in 1s */
@@ -446,14 +362,7 @@ static void sendping_tail(void (*sp)(int), const void *pkt, int size_pkt)
 			if (expire == 0)
 				expire = 1;
 		}
-#ifdef ATLAS
-		sa.sa_handler= req_exit;
-		sa.sa_flags= 0;
-		sigemptyset(&sa.sa_mask);
-		sigaction(SIGALRM, &sa, NULL);
-#else
 		signal(SIGALRM, print_stats_and_exit);
-#endif
 		alarm(expire);
 	}
 }
@@ -618,7 +527,7 @@ static void unpack4(char *buf, int sz, struct sockaddr_in *from)
 	}
 }
 #if ENABLE_PING6
-static void unpack6(char *packet, int sz, struct sockaddr_in6 *from, int hoplimit)
+static void unpack6(char *packet, int sz, /*struct sockaddr_in6 *from,*/ int hoplimit)
 {
 	struct icmp6_hdr *icmppkt;
 	char buf[INET6_ADDRSTRLEN];
@@ -638,13 +547,8 @@ static void unpack6(char *packet, int sz, struct sockaddr_in6 *from, int hoplimi
 		if (sz >= sizeof(struct icmp6_hdr) + sizeof(uint32_t))
 			tp = (uint32_t *) &icmppkt->icmp6_data8[4];
 		unpack_tail(sz, tp,
-#if 1	/* NSS, fixed for IPv6 ready logo */
-			inet_ntop(AF_INET6, &from->sin6_addr,
-					buf, sizeof(buf)),
-#else
 			inet_ntop(AF_INET6, &pingaddr.sin6.sin6_addr,
 					buf, sizeof(buf)),
-#endif
 			recv_seq, hoplimit);
 	} else if (icmppkt->icmp6_type != ICMP6_ECHO_REQUEST) {
 		bb_error_msg("warning: got ICMP %d (%s)",
@@ -689,9 +593,6 @@ static void ping4(len_and_sockaddr *lsa)
 		socklen_t fromlen = (socklen_t) sizeof(from);
 		int c;
 
-		if (need_to_exit)
-			break;
-
 		c = recvfrom(pingsock, packet, sizeof(packet), 0,
 				(struct sockaddr *) &from, &fromlen);
 		if (c < 0) {
@@ -703,7 +604,6 @@ static void ping4(len_and_sockaddr *lsa)
 		if (pingcount && nreceived >= pingcount)
 			break;
 	}
-	close(pingsock);
 }
 #if ENABLE_PING6
 extern int BUG_bad_offsetof_icmp6_cksum(void);
@@ -717,8 +617,6 @@ static void ping6(len_and_sockaddr *lsa)
 	char control_buf[CMSG_SPACE(36)];
 
 	pingsock = create_icmp6_socket();
-	if (pingsock == -1)
-		return;
 	pingaddr.sin6 = lsa->u.sin6;
 	/* untested whether "-I addr" really works for IPv6: */
 	if (source_lsa)
@@ -779,9 +677,6 @@ static void ping6(len_and_sockaddr *lsa)
 		int hoplimit = -1;
 		msg.msg_controllen = sizeof(control_buf);
 
-		if (need_to_exit)
-			break;
-
 		c = recvmsg(pingsock, &msg, 0);
 		if (c < 0) {
 			if (errno != EINTR)
@@ -797,34 +692,21 @@ static void ping6(len_and_sockaddr *lsa)
 				hoplimit = *(int*)CMSG_DATA(mp);
 			}
 		}
-		unpack6(packet, c, &from, hoplimit);
+		unpack6(packet, c, /*&from,*/ hoplimit);
 		if (pingcount && nreceived >= pingcount)
 			break;
 	}
-	close(pingsock);
 }
 #endif
 
 static void ping(len_and_sockaddr *lsa)
 {
-#ifdef ATLAS
-
-	if(str_Atlas) {
-        	time_t mytime;
-        	mytime = time(NULL);
-		printf ("%s %lu ", str_Atlas, mytime);
-	}
-        printf(" %s %s %d ",  hostname, dotted, datalen);
-#else
 	printf("PING %s (%s)", hostname, dotted);
-#endif /*i ifdef ATLAS */
 	if (source_lsa) {
 		printf(" from %s",
 			xmalloc_sockaddr2dotted_noport(&source_lsa->u.sa));
 	}
-#ifndef ATLAS
 	printf(": %d data bytes\n", datalen);
-#endif
 
 #if ENABLE_PING6
 	if (lsa->u.sa.sa_family == AF_INET6)
@@ -839,32 +721,15 @@ int ping_main(int argc UNUSED_PARAM, char **argv)
 {
 	len_and_sockaddr *lsa;
 	char *str_s;
-	uint32_t opt;
+	int opt;
 
 	INIT_G();
 
 	/* exactly one argument needed; -v and -q don't mix; -c NUM, -w NUM, -W NUM */
 	opt_complementary = "=1:q--v:v--q:c+:w+:W+";
-	opt = getopt32(argv, OPT_STRING, &pingcount, &str_s, &deadline, &timeout, &str_I, &str_Atlas);
-	if (opt == (uint32_t)-1)
-	{
-		return EXIT_FAILURE;
-	}
+	opt = getopt32(argv, OPT_STRING, &pingcount, &str_s, &deadline, &timeout, &str_I);
 	if (opt & OPT_s)
 		datalen = xatou16(str_s); // -s
-	if(opt & OPT_D_WATCHDOG )
-	{
-		int fd = open(WATCHDOGDEV, O_RDWR);
-		write(fd, "1", 1);
-		close(fd);
-	}
-
-	if(opt & OPT_A) 
-	{
-	}	
-	else 	
-		str_Atlas = NULL;
-
 	if (opt & OPT_I) { // -I
 		if_index = if_nametoindex(str_I);
 		if (!if_index) {
@@ -882,25 +747,11 @@ int ping_main(int argc UNUSED_PARAM, char **argv)
 			af = AF_INET;
 		if (opt & OPT_IPV6)
 			af = AF_INET6;
-#ifdef ATLAS
-		lsa = host_and_af2sockaddr(hostname, 0, af);
-#else
 		lsa = xhost_and_af2sockaddr(hostname, 0, af);
-#endif /* ATLAS */
 	}
-#else
-#ifdef ATLAS
-	lsa = host_and_af2sockaddr(hostname, 0, AF_INET);
 #else
 	lsa = xhost_and_af2sockaddr(hostname, 0, AF_INET);
-#endif /* ATLAS */
 #endif
-#ifdef ATLAS
-	if (!lsa) {
-		ping_report_reserr(hostname);
-		return EXIT_FAILURE;
-	}
-#endif /* ATLAS */
 
 	if (source_lsa && source_lsa->u.sa.sa_family != lsa->u.sa.sa_family)
 		/* leaking it here... */
@@ -908,21 +759,8 @@ int ping_main(int argc UNUSED_PARAM, char **argv)
 
 	dotted = xmalloc_sockaddr2dotted_noport(&lsa->u.sa);
 	ping(lsa);
-
-#ifdef ATLAS
-	print_stats();
-	alarm(0);
-	signal(SIGALRM, SIG_DFL);
-	signal(SIGINT, SIG_DFL);
-#else
 	print_stats_and_exit(EXIT_SUCCESS);
 	/*return EXIT_SUCCESS;*/
-#endif
-
-	free(dotted); dotted= NULL;
-	free(lsa); lsa= NULL;
-
-	return EXIT_SUCCESS;
 }
 #endif /* FEATURE_FANCY_PING */
 
@@ -972,113 +810,3 @@ int ping6_main(int argc UNUSED_PARAM, char **argv)
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#ifdef ATLAS
-/* Extra functions for Atlas. Also, slightly modified copies of code that can
- * be found in libbb.
- */
-
-static void ping_report(void)
-{
-	int t_errno= errno;
-
-	printf("0 0 0 %d\n", errno);
-	errno= t_errno;
-}
-
-static void ping_report_err(int err)
-{
-	printf("0 0 0 %d\n", err);
-}
-
-static void ping_report_reserr(const char *hn)
-{
-	if(str_Atlas) {
-        	time_t mytime;
-        	mytime = time(NULL);
-		printf ("%s %lu ", str_Atlas, mytime);
-	}
-        printf(" %s bad-hostname\n", hn);
-}
-
-/* From: libbb/create_icmp_socket.c */
-
-/* vi: set sw=4 ts=4: */
-/*
- * Utility routines.
- *
- * create raw socket for icmp protocol
- * and drop root privileges if running setuid
- */
-
-#include "libbb.h"
-
-int FAST_FUNC local_create_icmp_socket(void)
-{
-	int sock;
-#if 0
-	struct protoent *proto;
-	proto = getprotobyname("icmp");
-	/* if getprotobyname failed, just silently force
-	 * proto->p_proto to have the correct value for "icmp" */
-	sock = socket(AF_INET, SOCK_RAW,
-			(proto ? proto->p_proto : 1)); /* 1 == ICMP */
-#else
-	sock = socket(AF_INET, SOCK_RAW, 1); /* 1 == ICMP */
-#endif
-	if (sock < 0) {
-		if (errno == EPERM)
-			ping_report(), 
-			bb_error_msg_and_die(bb_msg_perm_denied_are_you_root);
-		ping_report();
-		bb_perror_msg_and_die(bb_msg_can_not_create_raw_socket);
-	}
-
-	/* drop root privs if running setuid */
-	xsetuid(getuid());
-
-	return sock;
-}
-
-/* From libbb/create_icmp6_socket.c */
-/* vi: set sw=4 ts=4: */
-/*
- * Utility routines.
- *
- * create raw socket for icmp (IPv6 version) protocol
- * and drop root privileges if running setuid
- */
-
-#include "libbb.h"
-
-#if ENABLE_FEATURE_IPV6
-int FAST_FUNC local_create_icmp6_socket(void)
-{
-	int sock;
-#if 0
-	struct protoent *proto;
-	proto = getprotobyname("ipv6-icmp");
-	/* if getprotobyname failed, just silently force
-	 * proto->p_proto to have the correct value for "ipv6-icmp" */
-	sock = socket(AF_INET6, SOCK_RAW,
-			(proto ? proto->p_proto : IPPROTO_ICMPV6));
-#else
-	sock = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
-#endif
-	if (sock < 0) {
-		if (errno == EPERM)
-			ping_report(),
-			bb_error_msg_and_die(bb_msg_perm_denied_are_you_root);
-		ping_report();
-		bb_perror_msg(bb_msg_can_not_create_raw_socket);
-		return -1;
-	}
-
-	/* drop root privs if running setuid */
-	xsetuid(getuid());
-
-	return sock;
-}
-#endif
-
-#endif /* ATLAS */
