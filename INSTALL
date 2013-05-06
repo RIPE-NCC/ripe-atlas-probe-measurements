@@ -9,7 +9,7 @@ The BusyBox build process is similar to the Linux kernel build:
   ./configure --prefix=/usr/local/atlas 
   make install 
   cd ../
-  make CONFIG_PREFIX=/usr/local//atlas/bb-13.3 install #RIPE NCC atlas install
+  make CONFIG_PREFIX=/usr/local/atlas/bb-13.3 install #RIPE NCC atlas install
 
 The full list of configuration and install options is available by typing:
 
