@@ -4,7 +4,7 @@ Building:
 The BusyBox build process is similar to the Linux kernel build:
 
   cd libevent-2.0.20-stable  # first build libevent
-  ./configure --prefix=/usr/local/atlas   --enable-shared=no --enable-static
+  ./configure --prefix=/usr/local/atlas 
   make install 
   cd ../
   make menuconfig     # This creates a file called ".config"
