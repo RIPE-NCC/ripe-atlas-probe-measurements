@@ -3,13 +3,15 @@ Building:
 
 The BusyBox build process is similar to the Linux kernel build:
 
-  make menuconfig     # This creates a file called ".config"
-  make                # This creates the "busybox" executable
   cd libevent-2.0.20-stable  # first build libevent
-  ./configure --prefix=/usr/local/atlas 
+  ./configure --prefix=/usr/local/atlas   --enable-shared=no --enable-static
   make install 
   cd ../
-  make CONFIG_PREFIX=/usr/local/atlas/bb-13.3 install #RIPE NCC atlas install
+  make menuconfig     # This creates a file called ".config"
+  make                # This creates the "busybox" executable
+  make 
+  cp examples/cron.root.7  /home/atlas/crons/7/root
+  /usr/local/atlas/bb-13.3/usr/sbin/eperd -c /home/atlas/crons/7 -A 19807 -P /home/atlas/status/perd-7.pid.vol -O /home/atlas/data/new/7
 
 The full list of configuration and install options is available by typing:
 
