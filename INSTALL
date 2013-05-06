@@ -10,6 +10,7 @@ The BusyBox build process is similar to the Linux kernel build:
   make menuconfig     # This creates a file called ".config"
   make                # This creates the "busybox" executable
   make 
+  mkdir -p /home/atlas/crons/7 /home/atlas/data/new
   cp examples/cron.root.7  /home/atlas/crons/7/root
   /usr/local/atlas/bb-13.3/usr/sbin/eperd -c /home/atlas/crons/7 -A 19807 -P /home/atlas/status/perd-7.pid.vol -O /home/atlas/data/new/7
 
