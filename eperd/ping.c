@@ -164,13 +164,6 @@ msecstotv(time_t msecs, struct timeval *tv)
 	tv->tv_usec = msecs % 1000 * 1000;
 }
 
-/* The time since 'tv' in microseconds */
-static time_t
-tvtousecs (struct timeval *tv)
-{
-	return tv->tv_sec * 1000000.0 + tv->tv_usec;
-}
-
 static void add_str(struct pingstate *state, const char *str)
 {
 	size_t len;
@@ -257,6 +250,7 @@ static void report(struct pingstate *state)
 	fprintf(fh, ", \"result\": [ %s ] }\n", state->result);
 	free(state->result);
 	state->result= NULL;
+
 	state->busy= 0;
 
 	if (state->out_filename)
@@ -273,6 +267,8 @@ static void ping_cb(int result, int bytes,
 	unsigned long usecs;
 	char namebuf[NI_MAXHOST];
 	char line[256];
+
+	(void)socklen;	/* Suppress GCC unused parameter warning */
 
 	pingstate= arg;
 
@@ -544,6 +540,11 @@ static void ping_xmit(struct pingstate *host)
 			(struct sockaddr *)&host->loc_sin6, host->loc_socklen,
 			0, host->rcvd_ttl, NULL,
 			host);
+		if (host->dns_res)
+		{
+			evutil_freeaddrinfo(host->dns_res);
+			host->dns_res= NULL;
+		}
 		if (host->base->done)
 			host->base->done(host);
 
@@ -751,13 +752,9 @@ printf("ready_callback4: too short\n");
 	  {
 	    /* Use the User Data to relate Echo Request/Reply and evaluate the Round Trip Time */
 	    struct timeval elapsed;             /* response time */
-	    time_t usecs;
 
 	    /* Compute time difference to calculate the round trip */
 	    evutil_timersub (&now, &data->ts, &elapsed);
-
-	    /* Update counters */
-	    usecs = tvtousecs(&elapsed);
 
 	    /* Set destination address of packet as local address */
 	    sin4p= &loc_sin4;
@@ -870,13 +867,9 @@ static void ready_callback6 (int __attribute((unused)) unused,
 	  {
 	    /* Use the User Data to relate Echo Request/Reply and evaluate the Round Trip Time */
 	    struct timeval elapsed;             /* response time */
-	    time_t usecs;
 
 	    /* Compute time difference to calculate the round trip */
 	    evutil_timersub (&now, &data->ts, &elapsed);
-
-	    /* Update counters */
-	    usecs = tvtousecs(&elapsed);
 
 	    /* Set destination address of packet as local address */
 	    memset(&loc_sin6, '\0', sizeof(loc_sin6));
@@ -1051,6 +1044,15 @@ static void *ping_init(int __attribute((unused)) argc, char *argv[],
 		fclose(fh);
 	}
 
+	if (str_Atlas)
+	{
+		if (!validate_atlas_id(str_Atlas))
+		{
+			crondlog(LVL8 "bad atlas ID '%s'", str_Atlas);
+			return NULL;
+		}
+	}
+
 	af= AF_UNSPEC;
 	if (opt & opt_4)
 		af= AF_INET;
@@ -1217,10 +1219,12 @@ static void dns_cb(int result, struct evutil_addrinfo *res, void *ctx)
 static void ping_start(void *state)
 {
 	struct pingstate *pingstate;
-	struct evdns_getaddrinfo_request *evdns_req;
 	struct evutil_addrinfo hints;
 
 	pingstate= state;
+
+	if (pingstate->busy)
+		return;
 
 	if (pingstate->result) free(pingstate->result);
 	pingstate->resmax= 80;
@@ -1247,8 +1251,8 @@ static void ping_start(void *state)
 	hints.ai_family= pingstate->af;
 	printf("hostname '%s', family %d\n",
 		pingstate->hostname, hints.ai_family);
-	evdns_req= evdns_getaddrinfo(DnsBase, pingstate->hostname,
-		NULL, &hints, dns_cb, pingstate);
+	(void) evdns_getaddrinfo(DnsBase, pingstate->hostname, NULL,
+		&hints, dns_cb, pingstate);
 }
 
 static int ping_delete(void *state)

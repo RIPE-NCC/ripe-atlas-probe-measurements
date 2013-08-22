@@ -377,7 +377,7 @@ int evtdig_main(int argc, char **argv)
 		crondlog(LVL9 "event_base_new failed"); /* exits */
 	}
 
-	qry = tdig_init(argc, argv, NULL);
+	qry = tdig_init(argc, argv, local_exit);
 	if(!qry) {
 		crondlog(DIE9 "evdns_base_new failed"); /* exits */
 		event_base_free	(EventBase);
@@ -425,7 +425,7 @@ void print_txt_json(unsigned char *rdata, int txt_len, FILE *fh)
 
 static void local_exit(void *state UNUSED_PARAM)
 {
-	//fprintf(stderr, "And we are done\n");
+	fprintf(stderr, "And we are done\n");
 	exit(0);
 }
 
@@ -1094,6 +1094,13 @@ static void *tdig_init(int argc, char *argv[], void (*done)(void *state))
 				break;
 
 			case 'A':
+				if (!validate_atlas_id(optarg))
+				{
+					crondlog(LVL8 "bad atlas ID '%s'",
+						optarg);
+					tdig_delete(qry);
+					return NULL;
+				}
 				qry->str_Atlas = strdup(optarg);
 				break;
 			case 'b':
@@ -1756,15 +1763,21 @@ void printErrorQuick (struct query_state *qry)
 		fh = stdout;
 
 	fprintf(fh, "RESULT { ");
-	if(qry->str_Atlas) 
-	{
-		JS(id,  qry->str_Atlas);
-	}
+
+	JS(id, "9202");
 	gettimeofday(&now, NULL);
 	JS1(time, %ld,  now.tv_sec);
 
-	snprintf(line, DEFAULT_LINE_LENGTH, "\"query busy\": \"too frequent. previous one is not done yet\"");
-	fprintf(fh, "\"error\" : { %s }" , line);
+	snprintf(line, DEFAULT_LINE_LENGTH, "\"query busy\": \"too frequent."
+			"previous one is not done yet\"");
+	fprintf(fh, "\"error\" : [{ %s }" , line);
+	if(qry->str_Atlas)
+	{
+		fprintf(fh, ",{" , line);
+		JS_NC(id,  qry->str_Atlas);
+		fprintf(fh, "}" , line);
+	}
+	fprintf(fh, "]");
 
 	fprintf(fh, " }");
 	fprintf(fh, "\n");

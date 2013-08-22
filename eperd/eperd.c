@@ -21,6 +21,8 @@
 
 #include "eperd.h"
 
+#define SAFE_PREFIX ATLAS_DATA_NEW
+
 /* glibc frees previous setenv'ed value when we do next setenv()
  * of the same variable. uclibc does not do this! */
 #if (defined(__GLIBC__) && !defined(__UCLIBC__)) /* || OTHER_SAFE_LIBC... */
@@ -260,6 +262,12 @@ int eperd_main(int argc UNUSED_PARAM, char **argv)
 			&LogLevel, &LogFile, &CDir, &atlas_id, &PidFileName
 			USE_FEATURE_PERD_D(,&LogLevel), &out_filename);
 	/* both -d N and -l N set the same variable: LogLevel */
+
+	if (out_filename && !validate_filename(out_filename, SAFE_PREFIX))
+	{
+		crondlog(DIE9 "insecure file '%s'. allowed path '%s'", 
+				out_filename, SAFE_PREFIX);
+	}
 
 	if (!(opt & OPT_f)) {
 		/* close stdin, stdout, stderr.
@@ -786,6 +794,7 @@ static struct builtin
 {
 	{ "evhttpget", &httpget_ops },
 	{ "evping", &ping_ops },
+	{ "evsslgetcert", &sslgetcert_ops },
 	{ "evtdig", &tdig_ops },
 	{ "evtraceroute", &traceroute_ops },
 	{ "condmv", &condmv_ops },

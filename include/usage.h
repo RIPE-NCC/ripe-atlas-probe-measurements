@@ -1055,6 +1055,11 @@
 	"\n	-6		IPv6" \
      "todo"
 
+#define evsslgetcert_trivial_usage \
+       "todo"
+#define evsslgetcert_full_usage "\n\n" \
+     "todo"
+
 #define evtraceroute_trivial_usage \
        "todo"
 #define evtraceroute_full_usage "\n\n" \
@@ -3545,6 +3550,10 @@
        "Output a cpio archive of the rpm file"
 
 #define rptra6_trivial_usage \
+
+#define rptaddr6_full_usage "\n\n" \
+
+#define rptaddr6_trivial_usage \
 
 #define rptra6_full_usage "\n\n" \
 
