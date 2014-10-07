@@ -972,7 +972,7 @@ static void send_pkt(struct trtstate *state)
 			base->packet[0]= sum >> 8;
 			base->packet[1]= sum;
 
-			sum= in_cksum_udp(&v4_ph, &udp,
+			sum= in_cksum_udp(&udp_ph, &udp,
 				(unsigned short *)base->packet, len);
 #endif
 
@@ -1616,217 +1616,6 @@ printf("curpacksize: %d\n", state->curpacksize);
 		}
 		else if (eip->ip_p == IPPROTO_UDP)
 		{
-			/* Now check if there is also a TCP header in the
-			 * packet
-			 */
-			if (nrecv < hlen + ICMP_MINLEN + ehlen + 8)
-			{
-				printf("ready_callback4: too short %d\n",
-					(int)nrecv);
-				return;
-			}
-
-			/* ICMP only guarantees 8 bytes! */
-			etcp= (struct tcphdr *)((char *)eip+ehlen);
-
-			/* Quick check if the source port is in range */
-			srcport= ntohs(etcp->source);
-			if (srcport < SRC_BASE_PORT ||
-				srcport > SRC_BASE_PORT+256)
-			{
-				printf(
-	"ready_callback4: unknown TCP port in ICMP: %d\n", srcport);
-				return;	/* Not for us */
-			}
-
-			/* We store the id in high order 16 bits of the
-			 * sequence number
-			 */
-			ind= ntohl(etcp->seq) >> 16;
-
-			state= NULL;
-			if (ind >= 0 && ind < base->tabsiz)
-				state= base->table[ind];
-			if (state && state->sin6.sin6_family != AF_INET)
-				state= NULL;
-			if (state && !state->do_tcp)
-				state= NULL;	
-
-			if (!state)
-			{
-				/* Nothing here */
-				printf(
-				"ready_callback4: no state for ind %d\n",
-					ind);
-				return;
-			}
-
-#if 0
-			printf("ready_callback4: from %s",
-				inet_ntoa(remote.sin_addr));
-			printf(" for %s hop %d\n",
-				inet_ntoa(((struct sockaddr_in *)
-				&state->sin6)->sin_addr), state->hop);
-#endif
-
-			if (!state->busy)
-			{
-#if 0
-				printf(
-			"ready_callback4: index (%d) is not busy\n",
-					ind);
-#endif
-				return;
-			}
-
-			late= 0;
-			isDup= 0;
-
-			/* Sequence number is in seq field */
-			seq= ntohl(etcp->seq) & 0xffff;
-
-			if (seq != state->seq)
-			{
-				if (seq > state->seq)
-				{
-#if 0
-					printf(
-	"ready_callback4: mismatch for seq, got 0x%x, expected 0x%x (for %s)\n",
-						seq, state->seq,
-						state->hostname);
-#endif
-					return;
-				}
-				late= 1;
-
-				snprintf(line, sizeof(line), "\"late\":%d",
-					state->seq-seq);
-				add_str(state, line);
-			}
-			else if (state->gotresp)
-			{
-				isDup= 1;
-				add_str(state, " }, { \"dup\":true");
-			}
-
-			if (!late && !isDup)
-				state->last_response_hop= state->hop;
-
-			ms= (now.tv_sec-state->xmit_time.tv_sec)*1000 +
-				(now.tv_usec-state->xmit_time.tv_usec)/1e3;
-
-			snprintf(line, sizeof(line), "%s\"from\":\"%s\"",
-				(late || isDup) ? ", " : "",
-				inet_ntoa(remote.sin_addr));
-			add_str(state, line);
-			snprintf(line, sizeof(line),
-				", \"ttl\":%d, \"size\":%d",
-				ip->ip_ttl, (int)nrecv - IPHDR - ICMP_MINLEN);
-			add_str(state, line);
-			if (!late)
-			{
-				snprintf(line, sizeof(line), ", \"rtt\":%.3f",
-					ms);
-				add_str(state, line);
-			}
-
-			if (eip->ip_ttl != 1)
-			{
-				snprintf(line, sizeof(line), ", \"ittl\":%d",
-					eip->ip_ttl);
-				add_str(state, line);
-			}
-
-			if (memcmp(&eip->ip_src,
-				&((struct sockaddr_in *)&state->loc_sin6)->
-				sin_addr, sizeof(eip->ip_src)) != 0)
-			{
-				printf("ready_callback4: changed source %s\n",
-					inet_ntoa(eip->ip_src));
-			}
-			if (memcmp(&eip->ip_dst,
-				&((struct sockaddr_in *)&state->sin6)->
-				sin_addr, sizeof(eip->ip_dst)) != 0)
-			{
-				snprintf(line, sizeof(line),
-					", \"edst\":\"%s\"",
-					inet_ntoa(eip->ip_dst));
-				add_str(state, line);
-			}
-			if (memcmp(&ip->ip_dst,
-				&((struct sockaddr_in *)&state->loc_sin6)->
-				sin_addr, sizeof(eip->ip_src)) != 0)
-			{
-				printf("ready_callback4: weird destination %s\n",
-					inet_ntoa(ip->ip_dst));
-			}
-
-#if 0
-			printf("ready_callback4: from %s, ttl %d",
-				inet_ntoa(remote.sin_addr), ip->ip_ttl);
-			printf(" for %s hop %d\n",
-				inet_ntoa(((struct sockaddr_in *)
-				&state->sin6)->sin_addr), state->hop);
-#endif
-
-			if (icmp->icmp_type == ICMP_TIME_EXCEEDED)
-			{
-				if (!late)
-					state->not_done= 1;
-			}
-			else if (icmp->icmp_type == ICMP_DEST_UNREACH)
-			{
-				if (!late)
-					state->done= 1;
-				switch(icmp->icmp_code)
-				{
-				case ICMP_UNREACH_NET:
-					add_str(state, ", \"err\":\"N\"");
-					break;
-				case ICMP_UNREACH_HOST:
-					add_str(state, ", \"err\":\"H\"");
-					break;
-				case ICMP_UNREACH_PROTOCOL:
-					add_str(state, ", \"err\":\"P\"");
-					break;
-				case ICMP_UNREACH_PORT:
-					break;
-				case ICMP_UNREACH_NEEDFRAG:
-					nextmtu= ntohs(icmp->icmp_nextmtu);
-					snprintf(line, sizeof(line),
-						", \"mtu\":%d",
-						nextmtu);
-					add_str(state, line);
-					if (!late && nextmtu >= sizeof(*ip)+
-						sizeof(*etcp))
-					{
-						nextmtu -= sizeof(*ip)+
-							sizeof(*etcp);
-						if (nextmtu <
-							state->curpacksize)
-						{
-							state->curpacksize=
-								nextmtu;
-						}
-					}
-printf("curpacksize: %d\n", state->curpacksize);
-					if (!late)
-						state->not_done= 1;
-					break;
-				case ICMP_UNREACH_FILTER_PROHIB:
-					add_str(state, ", \"err\":\"A\"");
-					break;
-				default:
-					snprintf(line, sizeof(line),
-						", \"err\":%d",
-						icmp->icmp_code);
-					add_str(state, line);
-					break;
-				}
-			}
-		}
-		else if (eip->ip_p == IPPROTO_UDP)
-		{
 			/* Now check if there is also a UDP header in the
 			 * packet
 			 */
@@ -1847,7 +1636,7 @@ printf("curpacksize: %d\n", state->curpacksize);
 				state= NULL;
 			if (state && state->sin6.sin6_family != AF_INET)
 				state= NULL;
-			if (state && state->do_Xicmp)
+			if (state && state->do_icmp)
 				state= NULL;	
 
 			if (!state)
@@ -2088,7 +1877,7 @@ printf("curpacksize: %d\n", state->curpacksize);
 				return;
 			}
 
-			if (!state->do_Xicmp)
+			if (!state->do_icmp)
 			{
 				printf(
 			"ready_callback4: index (%d) is not doing ICMP\n",
@@ -2310,45 +2099,39 @@ printf("%s, %d: sin6_family = %d\n", __FILE__, __LINE__, state->sin6.sin6_family
 
 		state->open_result= 1;
 
-	base= s;
-
-	iov[0].iov_base= base->packet;
-	iov[0].iov_len= sizeof(base->packet);
-	msg.msg_name= &remote;
-	msg.msg_namelen= sizeof(remote);
-	msg.msg_iov= iov;
-	msg.msg_iovlen= 1;
-	msg.msg_control= cmsgbuf;
-	msg.msg_controllen= sizeof(cmsgbuf);
-	msg.msg_flags= 0;			/* Not really needed */
-
-	nrecv= recvmsg(base->v6tcp_rcv, &msg, MSG_DONTWAIT);
-	if (nrecv == -1)
-	{
-		/* Strange, read error */
-		printf("ready_tcp6: read error '%s'\n", strerror(errno));
-		return;
-	}
-
-	rcvdttl= -42;	/* To spot problems */
-	memset(&dstaddr, '\0', sizeof(dstaddr));
-	for (cmsgptr= CMSG_FIRSTHDR(&msg); cmsgptr; 
-		cmsgptr= CMSG_NXTHDR(&msg, cmsgptr))
-	{
-		if (cmsgptr->cmsg_len == 0)
-			break;	/* Can this happen? */
-		if (cmsgptr->cmsg_level == IPPROTO_IPV6 &&
-			cmsgptr->cmsg_type == IPV6_HOPLIMIT)
+		if (!late && !isDup)
 		{
-			rcvdttl= *(int *)CMSG_DATA(cmsgptr);
-		}
-		if (cmsgptr->cmsg_level == IPPROTO_IPV6 &&
-			cmsgptr->cmsg_type == IPV6_PKTINFO)
-		{
-			dstaddr= ((struct in6_pktinfo *)
-				CMSG_DATA(cmsgptr))->ipi6_addr;
+			if (state->duptimeout)
+			{
+				state->gotresp= 1;
+				interval.tv_sec= state->duptimeout/1000000;
+				interval.tv_usec= state->duptimeout % 1000000;
+				evtimer_add(&state->timer, &interval);
+			}
+			else
+				send_pkt(state);
 		}
 	}
+	else if (icmp->icmp_type == ICMP_ECHOREPLY)
+	{
+		if (icmp->icmp_code != 0)
+		{
+			printf("ready_callback4: not proper ECHO REPLY\n");
+			return;
+		}
+
+		ind= ntohs(icmp->icmp_id);
+
+		if (ind >= base->tabsiz)
+		{
+			/* Out of range */
+#if 0
+			printf(
+			"ready_callback4: index out of range (%d)\n",
+				ind);
+#endif
+			return;
+		}
 
 		if (ind != state->index)
 		{
@@ -2359,19 +2142,20 @@ printf("%s, %d: sin6_family = %d\n", __FILE__, __LINE__, state->sin6.sin6_family
 			return;
 		}
 
-	if (!state)
-	{
-		/* Nothing here */
-		printf("ready_tcp6: no state for index %d\n", ind);
-		return;
-	}
+		if (state->sin6.sin6_family != AF_INET)
+		{
+			// printf("ready_callback4: bad family\n");
+			return;
+		}
 
-	if (!state->busy)
-	{
+		if (!state->busy)
+		{
 printf("%s, %d: sin6_family = %d\n", __FILE__, __LINE__, state->sin6.sin6_family);
-		printf("ready_tcp6: index (%d) is not busy\n", ind);
-		return;
-	}
+			printf(
+		"ready_callback4: index (%d) is not busy\n",
+				ind);
+			return;
+		}
 
 		if (state->open_result)
 			add_str(state, " }, { ");
@@ -2381,10 +2165,12 @@ printf("%s, %d: sin6_family = %d\n", __FILE__, __LINE__, state->sin6.sin6_family
 		seq= ntohs(icmp->icmp_seq);
 		if (seq != state->seq)
 		{
+			if (seq > state->seq)
+			{
 #if 0
-			printf(
+				printf(
 "ready_callback4: mismatch for seq, got 0x%x, expected 0x%x, for %s\n",
-				seq, state->seq, state->hostname);
+					seq, state->seq, state->hostname);
 #endif
 				return;
 			}
@@ -2399,20 +2185,17 @@ printf("%s, %d: sin6_family = %d\n", __FILE__, __LINE__, state->sin6.sin6_family
 			isDup= 1;
 			add_str(state, DBQ(dup) ":true");
 		}
-		late= 1;
 
-		snprintf(line, sizeof(line), "\"late\":%d",
-			state->seq-seq);
-		add_str(state, line);
-	}
-	else if (state->gotresp)
-	{
-		isDup= 1;
-		add_str(state, " }, { \"dup\":true");
-	}
+		if (memcmp(&ip->ip_dst,
+			&((struct sockaddr_in *)&state->loc_sin6)->
+			sin_addr, sizeof(eip->ip_src)) != 0)
+		{
+			printf("ready_callback4: weird destination %s\n",
+				inet_ntoa(ip->ip_dst));
+		}
 
-	ms= (now.tv_sec-state->xmit_time.tv_sec)*1000 +
-		(now.tv_usec-state->xmit_time.tv_usec)/1e3;
+		ms= (now.tv_sec-state->xmit_time.tv_sec)*1000 +
+			(now.tv_usec-state->xmit_time.tv_usec)/1e3;
 
 		snprintf(line, sizeof(line), "%s\"from\":\"%s\"",
 			(late || isDup) ? ", " : "",
@@ -2421,35 +2204,50 @@ printf("%s, %d: sin6_family = %d\n", __FILE__, __LINE__, state->sin6.sin6_family
 		snprintf(line, sizeof(line), ", \"ttl\":%d, \"size\":%d",
 			ip->ip_ttl, (int)nrecv - IPHDR - ICMP_MINLEN);
 		add_str(state, line);
-	}
+		if (!late)
+		{
+			snprintf(line, sizeof(line), ", \"rtt\":%.3f", ms);
+			add_str(state, line);
+		}
 
 #if 0
-	printf("ready_callback4: from %s, ttl %d",
-		inet_ntoa(remote.sin_addr), ip->ip_ttl);
-	printf(" for %s hop %d\n",
-		inet_ntoa(((struct sockaddr_in *)
-		&state->sin6)->sin_addr), state->hop);
+		printf("ready_callback4: from %s, ttl %d",
+			inet_ntoa(remote.sin_addr), ip->ip_ttl);
+		printf(" for %s hop %d\n",
+			inet_ntoa(((struct sockaddr_in *)
+			&state->sin6)->sin_addr), state->hop);
 #endif
 
-	/* Done */
-	state->done= 1;
+		/* Done */
+		state->done= 1;
 
 		state->open_result= 1;
 
-	if (!late && !isDup)
-	{
-		if (state->duptimeout)
+		if (!late && !isDup)
 		{
-			state->gotresp= 1;
-			interval.tv_sec= state->duptimeout/1000000;
-			interval.tv_usec= state->duptimeout % 1000000;
-			evtimer_add(&state->timer, &interval);
+			if (state->duptimeout)
+			{
+				state->gotresp= 1;
+				interval.tv_sec= state->duptimeout/1000000;
+				interval.tv_usec= state->duptimeout % 1000000;
+				evtimer_add(&state->timer, &interval);
+			}
+			else
+				send_pkt(state);
 		}
-		else
-			send_pkt(state);
-	}
 
-	return;
+		return;
+	}
+	else if (icmp->icmp_type == ICMP_ECHO ||
+		icmp->icmp_type == ICMP_ROUTERADVERT)
+	{
+		/* No need to do anything */
+	}
+	else
+	{
+		printf("ready_callback4: got type %d\n", icmp->icmp_type);
+		return;
+	}
 }
 
 static void ready_tcp4(int __attribute((unused)) unused,
@@ -3395,7 +3193,7 @@ printf("%s, %d: sin6_family = %d\n", __FILE__, __LINE__, state->sin6.sin6_family
 		if (state && state->sin6.sin6_family != AF_INET6)
 			state= NULL;
 
-		if (state && !state->do_Xicmp)
+		if (state && !state->do_icmp)
 		{
 			state= NULL;	
 		}
@@ -3805,7 +3603,7 @@ static void traceroute_start2(void *state)
 	snprintf(line, sizeof(line), "{ \"hop\":%d", trtstate->hop);
 	add_str(trtstate, line);
 
-	if (trtstate->do_Xicmp)
+	if (trtstate->do_icmp)
 	{
 		if (create_socket(trtstate, 0 /*do_tcp*/) == -1)
 			return;
