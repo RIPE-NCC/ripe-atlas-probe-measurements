@@ -712,7 +712,7 @@ static void mk_dns_buff(struct query_state *qry,  u_char *packet)
 	dns->aa = 0; //Not Authoritative
 	dns->tc = 0; //This message is not truncated
 	dns->rd = 0; //Recursion  not Desired
-	dns->ra = 1; //Recursion not available! hey we dont have it (lol)
+	dns->ra = 0; //Recursion not available! hey we dont have it (lol)
 	dns->z = 0;
 	dns->ad = 0;
 	dns->cd = 0;
@@ -1895,7 +1895,8 @@ void tdig_start (struct query_state *qry)
 		interval.tv_sec = CONN_TO;
 		interval.tv_usec= 0;
 		tu_connect_to_name (&qry->tu_env,   qry->server_name, port_as_char,
-				&interval, &hints, tcp_timeout_callback, tcp_reporterr,
+				&interval, &hints, NULL,
+				tcp_timeout_callback, tcp_reporterr,
 				tcp_dnscount, tcp_beforeconnect,
 				tcp_connected, tcp_readcb, tcp_writecb);
 
@@ -2194,7 +2195,9 @@ void printReply(struct query_state *qry, int wire_size, unsigned char *result)
 	int flagAnswer = 0;
 	int data_len;
 	int write_out = FALSE;
-	u_int32_t fw;
+
+	int fw = get_atlas_fw_version();
+	int lts = get_timesync();
 
 	if(! qry->result.size){
 		buf_init(&qry->result, -1);
@@ -2206,19 +2209,21 @@ void printReply(struct query_state *qry, int wire_size, unsigned char *result)
 			JS(id,  qry->str_Atlas);
 		}
 
-		fw = get_atlas_fw_version();
-		JU(fw, fw);
-
+		JD(fw, fw);
 		if (qry->opt_rset){
 			JS1(time, %ld,  qry->xmit_time.tv_sec);
+			JD(lts,lts);
 			AS("\"resultset\" : [ {");
 		}
+
 	}
 	else if(qry->opt_rset) {
 		AS (",{");
 	}
 
 	JS1(time, %ld,  qry->xmit_time.tv_sec);
+	JD(lts,lts);
+
 	if ( qry->opt_resolv_conf ) {
 		JD (subid, (qry->resolv_i+1));
 		JD (submax, qry->base->resolv_max);

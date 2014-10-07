@@ -748,8 +748,9 @@ static void report(struct state *state)
 	{
 		fprintf(fh, DBQ(id) ":" DBQ(%s) ", "
 			DBQ(fw) ":%d, "
+			DBQ(lts) ":%d, "
 			DBQ(time) ":%ld, ",
-			state->atlas, get_atlas_fw_version(),
+			state->atlas, get_atlas_fw_version(), get_timesync(),
 			state->gstart);
 	}
 
@@ -977,8 +978,10 @@ static int eat_certificate(struct state *state)
 		if (state->atlas)
 		{
 			fprintf(fh, DBQ(id) ":" DBQ(%s)
-				", " DBQ(fw) ":%d",
-				state->atlas, get_atlas_fw_version());
+				", " DBQ(fw) ":%d"
+				", " DBQ(lts) ":%d",
+				state->atlas, get_atlas_fw_version(),
+				get_timesync());
 		}
 
 		fprintf(fh, "%s" DBQ(time) ":%ld",
@@ -1260,7 +1263,7 @@ static void sslgetcert_start(void *vstate)
 
 	tu_connect_to_name(&state->tu_env, state->hostname,
 		state->portname,
-		&interval, &hints, timeout_callback,
+		&interval, &hints, NULL, timeout_callback,
 		reporterr, dnscount, beforeconnect,
 		connected, readcb, writecb);
 }
