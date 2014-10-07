@@ -28,7 +28,7 @@
 #define uh_sum check
 #endif
 
-#define TRACEROUTE_OPT_STRING ("!46IUFrTa:c:f:g:i:m:p:w:z:A:O:S:H:D:")
+#define TRACEROUTE_OPT_STRING ("!46IUFrTa:b:c:f:g:i:m:p:w:z:A:O:S:H:D:")
 
 #define OPT_4	(1 << 0)
 #define OPT_6	(1 << 1)
@@ -99,6 +99,7 @@ struct trtstate
 	unsigned char maxhops;
 	unsigned char gaplimit;
 	unsigned char parismod;
+	unsigned char parisbase;
 	unsigned duptimeout;
 	unsigned timeout;
 
@@ -426,8 +427,7 @@ static void report(struct trtstate *state)
 	fprintf(fh, ", \"size\":%d", state->maxpacksize);
 	if (state->parismod)
 	{
-		fprintf(fh, ", \"paris_id\":%d",
-			state->paris % state->parismod);
+		fprintf(fh, ", \"paris_id\":%d", state->paris);
 	}
 	fprintf(fh, ", \"result\": [ %s ] }\n", state->result);
 
@@ -703,7 +703,7 @@ static void send_pkt(struct trtstate *state)
 					(unsigned short *)base->packet, len);
 
 				/* Avoid 0 */
-				val= state->paris % state->parismod + 1;
+				val= state->paris + 1;
 
 				sum= ntohs(sum);
 				usum= sum + (0xffff - val);
@@ -795,7 +795,7 @@ static void send_pkt(struct trtstate *state)
 			if (state->parismod)
 			{
 				state->sin6.sin6_port= htons(BASE_PORT +
-					(state->paris % state->parismod));
+					state->paris);
 			}
 			else
 			{
@@ -1135,8 +1135,7 @@ static void send_pkt(struct trtstate *state)
 			if (state->parismod)
 			{
 				((struct sockaddr_in *)&state->sin6)->sin_port=
-					htons(BASE_PORT +
-					(state->paris % state->parismod));
+					htons(BASE_PORT + state->paris);
 			}
 			else
 			{
@@ -1299,9 +1298,13 @@ static void do_icmp_multi(struct trtstate *state,
 	cksum= in_cksum((unsigned short *)packet, size);
 	if (cksum != 0)
 	{
-		/* There is also anoption for a zero checksum. */
+		/* There is also an option for a zero checksum. */
 		if (!pre_rfc4884)
+		{
+#if 0
 			printf("do_icmp_multi: bad checksum\n");
+#endif
+		}
 		return;
 	}
 
@@ -1329,7 +1332,9 @@ static void do_icmp_multi(struct trtstate *state,
 		if (len < 4 || o+len > size)
 		{
 			add_str(state, " }");
+#if 0
 			printf("do_icmp_multi: bad len %d\n", len);
+#endif
 			break;
 		}
 		if (class == ICMPEXT_MPLS && ctype == ICMPEXT_MPLS_IN)
@@ -1421,8 +1426,10 @@ static void ready_callback4(int __attribute((unused)) unused,
 			if (srcport < SRC_BASE_PORT ||
 				srcport > SRC_BASE_PORT+256)
 			{
+#if 0
 				printf(
 	"ready_callback4: unknown TCP port in ICMP: %d\n", srcport);
+#endif
 				return;	/* Not for us */
 			}
 
@@ -1865,9 +1872,11 @@ printf("curpacksize: %d\n", state->curpacksize);
 			if (ind != state->index)
 			{
 				/* Nothing here */
+#if 0
 				printf(
 				"ready_callback4: nothing at index (%d)\n",
 					ind);
+#endif
 				return;
 			}
 
@@ -1898,8 +1907,8 @@ printf("%s, %d: sin6_family = %d\n", __FILE__, __LINE__, state->sin6.sin6_family
 			{
 				printf(
 	"ready_callback4: mismatch for paris, got 0x%x, expected 0x%x (%s)\n",
-					ntohs(eicmp->icmp_cksum), state->paris,
-					state->hostname);
+					ntohs(eicmp->icmp_cksum),
+					state->paris, state->hostname);
 			}
 
 			if (state->open_result)
@@ -2064,8 +2073,10 @@ printf("%s, %d: sin6_family = %d\n", __FILE__, __LINE__, state->sin6.sin6_family
 		if (icmp_prefixlen != 0)
 		{
 			
+#if 0
 			printf("icmp_pmvoid: 0x%x for %s\n", icmp->icmp_pmvoid, state->hostname);
 			printf("icmp_prefixlen: 0x%x for %s\n", icmp_prefixlen, inet_ntoa(remote.sin_addr));
+#endif
 			offset= hlen + ICMP_MINLEN + icmp_prefixlen;
 			if (nrecv > offset)
 			{
@@ -2074,9 +2085,11 @@ printf("%s, %d: sin6_family = %d\n", __FILE__, __LINE__, state->sin6.sin6_family
 			}
 			else
 			{
+#if 0
 				printf(
 			"ready_callback4: too short %d (Multi-Part ICMP)\n",
 					(int)nrecv);
+#endif
 			}
 		}
 		else if (nrecv > hlen + ICMP_MINLEN + 128)
@@ -2136,9 +2149,11 @@ printf("%s, %d: sin6_family = %d\n", __FILE__, __LINE__, state->sin6.sin6_family
 		if (ind != state->index)
 		{
 			/* Nothing here */
+#if 0
 			printf(
 			"ready_callback4: nothing at index (%d)\n",
 				ind);
+#endif
 			return;
 		}
 
@@ -2976,12 +2991,12 @@ printf("%s, %d: sin6_family = %d\n", __FILE__, __LINE__, state->sin6.sin6_family
 
 			if (eicmp && state->parismod &&
 				ntohs(eicmp->icmp6_cksum) !=
-				state->paris % state->parismod + 1)
+				state->paris + 1)
 			{
 				printf(
 			"ready_callback6: got checksum 0x%x, expected 0x%x\n",
 					ntohs(eicmp->icmp6_cksum),
-					state->paris % state->parismod + 1);
+					state->paris + 1);
 			}
 
 			if (!late)
@@ -3375,7 +3390,7 @@ static void *traceroute_init(int __attribute((unused)) argc, char *argv[],
 	uint32_t opt;
 	int i, do_icmp, do_v6, dont_fragment, delay_name_res, do_tcp, do_udp;
 	unsigned count, duptimeout, firsthop, gaplimit, maxhops, maxpacksize,
-		hbhoptsize, destoptsize, parismod, timeout;
+		hbhoptsize, destoptsize, parismod, parisbase, timeout;
 		/* must be int-sized */
 	size_t newsiz;
 	char *str_Atlas;
@@ -3407,16 +3422,18 @@ static void *traceroute_init(int __attribute((unused)) argc, char *argv[],
 	duptimeout= 10;
 	timeout= 1000;
 	parismod= 16;
+	parisbase= 0;
 	hbhoptsize= 0;
 	destoptsize= 0;
 	str_Atlas= NULL;
 	out_filename= NULL;
-	opt_complementary = "=1:4--6:i--u:a+:c+:f+:g+:m+:w+:z+:S+:H+:D+";
+	opt_complementary = "=1:4--6:i--u:a+:b+:c+:f+:g+:m+:w+:z+:S+:H+:D+";
 
 for (i= 0; argv[i] != NULL; i++)
 	printf("argv[%d] = '%s'\n", i, argv[i]);
 
-	opt = getopt32(argv, TRACEROUTE_OPT_STRING, &parismod, &count,
+	opt = getopt32(argv, TRACEROUTE_OPT_STRING, &parismod, &parisbase,
+		&count,
 		&firsthop, &gaplimit, &interface, &maxhops, &destportstr,
 		&timeout,
 		&duptimeout, &str_Atlas, &out_filename, &maxpacksize,
@@ -3490,6 +3507,7 @@ for (i= 0; argv[i] != NULL; i++)
 
 	state= xzalloc(sizeof(*state));
 	state->parismod= parismod;
+	state->parisbase= parisbase;
 	state->trtcount= count;
 	state->firsthop= firsthop;
 	state->maxpacksize= maxpacksize;
@@ -3511,6 +3529,7 @@ for (i= 0; argv[i] != NULL; i++)
 	state->destoptsize= destoptsize;
 	state->out_filename= out_filename ? strdup(out_filename) : NULL;
 	state->base= trt_base;
+	state->paris= 0;
 	state->busy= 0;
 	state->result= NULL;
 	state->reslen= 0;
@@ -3583,7 +3602,11 @@ static void traceroute_start2(void *state)
 	trtstate->hop= trtstate->firsthop;
 	trtstate->sent= 0;
 	trtstate->seq= 0;
-	trtstate->paris++;
+	if (trtstate->parismod)
+	{
+		trtstate->paris= (trtstate->paris-trtstate->parisbase+1) %
+			trtstate->parismod + trtstate->parisbase;
+	}
 	trtstate->last_response_hop= 0;	/* Should be starting hop */
 	trtstate->done= 0;
 	trtstate->not_done= 0;

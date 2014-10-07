@@ -66,6 +66,12 @@ enum
 /* Definition for various types of counters */
 typedef uint64_t counter_t;
 
+/* For matching up requests and replies. Assume that 64 bits is enough */
+struct cookie
+{
+	uint8_t data[8];
+};
+
 /* How to keep track of a PING session */
 struct pingbase
 {
@@ -116,6 +122,7 @@ struct pingstate
 	size_t resmax;
 
 	struct pingbase *base;
+	struct cookie cookie;
 
 	sa_family_t af;			/* Desired address family */
 	struct evutil_addrinfo *dns_res;
@@ -153,6 +160,7 @@ struct pingstate
 struct evdata {
 	struct timeval ts;
 	uint32_t index;
+	struct cookie cookie;
 };
 
 
@@ -209,13 +217,15 @@ static void report(struct pingstate *state)
 	fprintf(fh, DBQ(dst_name) ":" DBQ(%s),
 		state->hostname);
 
+	fprintf(fh, ", " DBQ(af) ":%d",
+		state->af == AF_INET ? 4 : 6);
+
 	if (!state->no_dst)
 	{
 		getnameinfo((struct sockaddr *)&state->sin6, state->socklen,
 			namebuf, sizeof(namebuf), NULL, 0, NI_NUMERICHOST);
 
-		fprintf(fh, ", " DBQ(dst_addr) ":" DBQ(%s) ", " DBQ(af) ":%d",
-			namebuf, state->sin6.sin6_family == AF_INET6 ? 6 : 4);
+		fprintf(fh, ", " DBQ(dst_addr) ":" DBQ(%s), namebuf);
 	}
 
 	if (state->got_reply)
@@ -302,7 +312,6 @@ static void ping_cb(int result, int bytes, int psize,
 			"%s{ ", pingstate->first ? "" : ", ");
 		add_str(pingstate, line);
 		pingstate->first= 0;
-		pingstate->no_dst= 0;
 		if (result == PING_ERR_DUP)
 		{
 			add_str(pingstate, DBQ(dup) ":1, ");
@@ -373,7 +382,6 @@ static void ping_cb(int result, int bytes, int psize,
 			"%s{ " DBQ(x) ":" DBQ(*),
 			pingstate->first ? "" : ", ");
 		add_str(pingstate, line);
-		pingstate->no_dst= 0;
 	}
 	if (result == PING_ERR_SENDTO)
 	{
@@ -381,7 +389,6 @@ static void ping_cb(int result, int bytes, int psize,
 			"%s{ " DBQ(error) ":" DBQ(sendto failed: %s),
 			pingstate->first ? "" : ", ", strerror(seq));
 		add_str(pingstate, line);
-		pingstate->no_dst= 0;
 	}
 	if (result == PING_ERR_TIMEOUT || result == PING_ERR_SENDTO)
 	{
@@ -463,7 +470,7 @@ static int mkcksum(u_short *p, int n)
  * ho hosts being monitored
  */
 static void fmticmp4(u_char *buffer, size_t *sizep, u_int8_t seq,
-	uint32_t idx, pid_t pid)
+	uint32_t idx, pid_t pid, struct cookie *cookiep)
 {
 	size_t minlen;
 	struct icmp *icmp = (struct icmp *) buffer;
@@ -477,8 +484,7 @@ static void fmticmp4(u_char *buffer, size_t *sizep, u_int8_t seq,
 	if (*sizep > MAX_DATA_SIZE - ICMP_MINLEN)
 		*sizep= MAX_DATA_SIZE - ICMP_MINLEN;
 
-	if (*sizep > minlen)
-		memset(buffer+minlen, '\0', *sizep-minlen);
+	memset(buffer, '\0', *sizep + ICMP_MINLEN);
 
 	/* The ICMP header (no checksum here until user data has been filled in) */
 	icmp->icmp_type = ICMP_ECHO;             /* type of message */
@@ -490,6 +496,7 @@ static void fmticmp4(u_char *buffer, size_t *sizep, u_int8_t seq,
 	gettimeofday(&now, NULL);
 	data->ts    = now;                       /* current time */
 	data->index = idx;                     /* index into an array */
+	data->cookie= *cookiep;
 
 	/* Last, compute ICMP checksum */
 	icmp->icmp_cksum = 0;
@@ -513,7 +520,7 @@ static void fmticmp4(u_char *buffer, size_t *sizep, u_int8_t seq,
  * ho hosts being monitored
  */
 static void fmticmp6(u_char *buffer, size_t *sizep,
-	u_int8_t seq, uint32_t idx, pid_t pid)
+	u_int8_t seq, uint32_t idx, pid_t pid, struct cookie *cookiep)
 {
 	size_t minlen;
 	struct icmp6_hdr *icmp = (struct icmp6_hdr *) buffer;
@@ -527,8 +534,7 @@ static void fmticmp6(u_char *buffer, size_t *sizep,
 	if (*sizep > MAX_DATA_SIZE - ICMP6_HDRSIZE)
 		*sizep= MAX_DATA_SIZE - ICMP6_HDRSIZE;
 
-	if (*sizep > minlen)
-		memset(buffer+minlen, '\0', *sizep-minlen);
+	memset(buffer, '\0', *sizep+ICMP6_HDRSIZE);
 
 	/* The ICMP header (no checksum here until user data has been filled in) */
 	icmp->icmp6_type = ICMP6_ECHO_REQUEST;   /* type of message */
@@ -540,6 +546,7 @@ static void fmticmp6(u_char *buffer, size_t *sizep,
 	gettimeofday(&now, NULL);
 	data->ts    = now;                       /* current time */
 	data->index = idx;                     /* index into an array */
+	data->cookie= *cookiep;
 
 	icmp->icmp6_cksum = 0;
 }
@@ -577,7 +584,7 @@ static void ping_xmit(struct pingstate *host)
 	{
 		/* Format the ICMP Echo Reply packet to send */
 		fmticmp6(base->packet, &host->cursize, host->seq, host->index,
-			base->pid);
+			base->pid, &host->cookie);
 
 		host->loc_socklen= sizeof(host->loc_sin6);
 		getsockname(host->socket, &host->loc_sin6, &host->loc_socklen);
@@ -592,7 +599,7 @@ static void ping_xmit(struct pingstate *host)
 	{
 		/* Format the ICMP Echo Reply packet to send */
 		fmticmp4(base->packet, &host->cursize, host->seq, host->index,
-			base->pid);
+			base->pid, &host->cookie);
 
 		host->loc_socklen= sizeof(host->loc_sin6);
 		getsockname(host->socket, &host->loc_sin6, &host->loc_socklen);
@@ -735,6 +742,13 @@ printf("ready_callback4: too short\n");
 	if (state != base->table[data->index])
 		goto done;	/* Not for us */
 
+	/* Make sure we got the right cookie */
+	if (memcmp(&state->cookie, &data->cookie, sizeof(state->cookie)) != 0)
+	{
+		crondlog(LVL8 "ICMP with wrong cookie");
+		goto done;
+	}
+
 	/* Check for Destination Host Unreachable */
 	if (icmp->type == ICMP_ECHO)
 	{
@@ -802,7 +816,7 @@ static void ready_callback6 (int __attribute((unused)) unused,
 	struct pingstate *state;
 
 	int nrecv, isDup;
-	struct sockaddr_in remote;                  /* responding internet address */
+	struct sockaddr_in6 remote;           /* responding internet address */
 
 	struct icmp6_hdr *icmp;
 	struct evdata * data;
@@ -861,6 +875,13 @@ static void ready_callback6 (int __attribute((unused)) unused,
 	/* Get the pointer to the host descriptor in our internal table */
 	if (state != base->table[data->index])
 		goto done;	/* Not for us */
+
+	/* Make sure we got the right cookie */
+	if (memcmp(&state->cookie, &data->cookie, sizeof(state->cookie)) != 0)
+	{
+		crondlog(LVL8 "ICMP with wrong cookie");
+		goto done;
+	}
 
 	/* Check for Destination Host Unreachable */
 	if (icmp->icmp6_type == ICMP6_ECHO_REPLY)
@@ -925,7 +946,7 @@ static void *ping_init(int __attribute((unused)) argc, char *argv[],
 {
 	static struct pingbase *ping_base;
 
-	int i, newsiz, delay_name_res;
+	int i, r, fd, newsiz, delay_name_res;
 	uint32_t opt;
 	unsigned pingcount; /* must be int-sized */
 	unsigned size, interval;
@@ -937,6 +958,7 @@ static void *ping_init(int __attribute((unused)) argc, char *argv[],
 	struct pingstate *state;
 	len_and_sockaddr *lsa;
 	FILE *fh;
+	struct cookie cookie;
 
 	if (!ping_base)
 	{
@@ -955,6 +977,21 @@ static void *ping_init(int __attribute((unused)) argc, char *argv[],
 		ping_base->pid = getpid();
 
 		ping_base->done= 0;
+	}
+
+	/* Get cookie */
+	fd= open("/dev/urandom", O_RDONLY);
+	if (fd == -1)
+	{
+		crondlog(LVL8 "unable to open /dev/urandom");
+		return NULL;
+	}
+	r= read(fd, &cookie, sizeof(cookie));
+	close(fd);
+	if (r != sizeof(cookie))
+	{
+		crondlog(LVL8 "unable to read from /dev/urandom");
+		return NULL;
 	}
 
 	/* Parse arguments */
@@ -1080,6 +1117,7 @@ static void *ping_init(int __attribute((unused)) argc, char *argv[],
 	state->result= NULL;
 	state->reslen= 0;
 	state->resmax= 0;
+	state->cookie= cookie;
 
 	state->maxsize = size;
 	state->base->done= done;
@@ -1100,6 +1138,7 @@ static void ping_start2(void *state)
 
 	pingstate->send_error= 0;
 	pingstate->got_reply= 0;
+	pingstate->no_dst= 0;
 
 	if (pingstate->af == AF_INET)
 	{
