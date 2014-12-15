@@ -14,8 +14,8 @@ int ping_main(int argc, char *argv[]);
 int sslgetcert_main(int argc, char *argv[]);
 int tdig_main(int argc, char *argv[]);
 int traceroute_main(int argc, char *argv[]);
-#endif
 int wifimsm_main(int argc, char *argv[]);
+#endif
 
 static struct builtin 
 {
@@ -30,7 +30,7 @@ static struct builtin
 	{ "ping", ping_main },
 	{ "sslgetcert", sslgetcert_main },
 	{ "traceroute", traceroute_main },
-#endif
 	{ "wifimsm", wifimsm_main },
+#endif
 	{ NULL, 0 }
 };
