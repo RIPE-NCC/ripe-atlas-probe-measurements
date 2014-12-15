@@ -25,7 +25,7 @@
 #define IPV4_STATIC	ATLAS_STATUS "/network_v4_static_info.json"
 #define IPV6_STATIC	ATLAS_STATUS "/network_v6_static_info.json"
 #define DNS_STATIC	ATLAS_STATUS "/network_dns_static_info.json"
-#define NETWORK_INFO	ATLAS_STATUS "/network_info.txt"
+#define NETWORK_INFO	ATLAS_STATUS "/network_v4_info.txt"
 
 #define SAFE_PREFIX_N ATLAS_DATA_NEW
 
@@ -63,7 +63,9 @@ static int rpt_ipv6(char *cache_name, char *out_name, char *opt_atlas, int opt_a
 static void report(const char *fmt, ...);
 static void report_err(const char *fmt, ...); 
 
-int rptaddrs_main(int argc, char *argv[])
+int rptaddrs_main(int argc, char *argv[]);
+
+int rptaddrs_main(int argc UNUSED_PARAM, char *argv[])
 {
 	int r, need_report;
 	unsigned opt;
@@ -277,7 +279,7 @@ static int setup_dhcpv4(FILE *of)
 {
 	int found;
 	FILE *in_file;
-	char *value;
+	const char *value;
 	char line[128];
 
 	in_file= fopen(NETWORK_INFO, "r");
@@ -452,6 +454,9 @@ static int setup_ipv6_rpt(FILE *of)
 			continue;
 		}
 
+		if (prefix_len == 128)
+			continue;	/* Skip host routes */
+
 		 snprintf(dst6in, sizeof(dst6in), "%s:%s:%s:%s:%s:%s:%s:%s",
                                                 dst6p[0], dst6p[1], dst6p[2], dst6p[3],
                                                 dst6p[4], dst6p[5], dst6p[6], dst6p[7]);
@@ -575,7 +580,7 @@ static int report_line(FILE *of, const char *fn)
 {
 	FILE *f;
 	char *nl;
-	char line[256];
+	char line[512];
 
 	f= fopen(fn, "r");
 	if (f == NULL)
@@ -616,6 +621,7 @@ static int report_line(FILE *of, const char *fn)
 static int check_cache(char *cache_name)
 {
 	int r, need_report;
+	struct stat sb;
 	char filename[80];
 
 	char buf1[1024];
@@ -626,6 +632,17 @@ static int check_cache(char *cache_name)
 	strlcat(filename, SUFFIX, sizeof(filename));
 
 	need_report= 0;
+
+	if (stat(cache_name, &sb) == 0 &&
+		sb.st_mtime < time(NULL) - 30 * 24 * 3600)
+	{
+		/* This basically makes sure that this information gets
+		 * reported again when the clock is set for the first time.
+		 * A side effect is that it gets reported once a month if
+		 * nothing changes.
+		 */
+		need_report= 1;
+	}
 
 	/* Now check if the new file is different from the cache one */
 	cache_file= fopen(cache_name, "r");
