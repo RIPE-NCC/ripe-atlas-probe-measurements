@@ -94,14 +94,15 @@ static struct builtin
 	{ NULL, NULL }
 };
 
+#define INIT_G() do { \
+	LogLevel = 8; \
+} while (0)
+
 static const char *atlas_id;
 static const char *queue_id;
 
 static char *resolv_conf;
 static char output_filename[80];
-
-static void report(const char *fmt, ...);
-static void report_err(const char *fmt, ...);
 
 static void checkQueue(evutil_socket_t fd, short what, void *arg);
 static int add_line(void);
@@ -121,7 +122,8 @@ int eooqd_main(int argc, char *argv[])
 {
 	int r;
 	size_t len;
-	char *pid_file_name, *interface_name, *instance_id_str;
+	char *pid_file_name, *interface_name, *instance_id_str,
+		*loglevel_str;
 	char *check;
 	struct event *checkQueueEvent, *rePostEvent;
 	struct timeval tv;
@@ -132,16 +134,30 @@ int eooqd_main(int argc, char *argv[])
 	interface_name= NULL;
 	instance_id_str= NULL;
 	pid_file_name= NULL;
+	loglevel_str= NULL;
 	queue_id= "";
 
-	(void)getopt32(argv, "A:I:i:P:q:", &atlas_id, 
+	INIT_G();
+
+	(void)getopt32(argv, "A:I:i:P:q:l:", &atlas_id,
 		&interface_name, &instance_id_str,
-		&pid_file_name, &queue_id);
+		&pid_file_name, &queue_id, &loglevel_str);
 
 	if (argc != optind+1)
 	{
 		bb_show_usage();
 		return 1;
+	}
+
+	if (loglevel_str)
+	{
+		LogLevel= (unsigned)strtoul(loglevel_str, &check, 0);
+		if (check[0] != '\0')
+		{
+			crondlog(LVL7 "unable to parse loglevel '%s'",
+				loglevel_str);
+			return 1;
+		}
 	}
 
 	instance_id= 0;
@@ -150,7 +166,7 @@ int eooqd_main(int argc, char *argv[])
 		instance_id= strtoul(instance_id_str, &check, 0);
 		if (check[0] != '\0')
 		{
-			report("unable to parse instance id '%s'",
+			crondlog(LVL7 "unable to parse instance id '%s'",
 				instance_id_str);
 			return 1;
 		}
@@ -195,7 +211,7 @@ int eooqd_main(int argc, char *argv[])
 	if (strlen(state->queue_file) + strlen(SUFFIX) + 1 >
 		sizeof(state->curr_qfile))
 	{
-		report("filename too long ('%s')", state->queue_file);
+		crondlog(LVL7 "filename too long ('%s')", state->queue_file);
 		return 1;
 	}
 
@@ -283,7 +299,7 @@ static void checkQueue(evutil_socket_t fd UNUSED_PARAM,
 			{
 				return;
 			}
-			report_err("stat failed");
+			crondlog(LVL9 "stat failed");
 			return;
 		}
 
@@ -296,7 +312,7 @@ static void checkQueue(evutil_socket_t fd UNUSED_PARAM,
 			/* Expect ENOENT */
 			if (errno != ENOENT)
 			{
-				report_err("unlink failed");
+				crondlog(LVL9 "unlink failed");
 				return;
 			}
 		}
@@ -310,14 +326,14 @@ static void checkQueue(evutil_socket_t fd UNUSED_PARAM,
 			/* We verified queue_file is there so any failure is
 			 * fatal.
 			 */
-			report_err("rename failed");
+			crondlog(LVL9 "rename failed");
 			return;
 		}
 
 		state->curr_file= fopen(state->curr_qfile, "r");
 		if (state->curr_file == NULL)
 		{
-			report_err("open '%s' failed", state->curr_qfile);
+			crondlog(LVL9 "open '%s' failed", state->curr_qfile);
 			return;
 		}
 	}
@@ -359,7 +375,7 @@ static int add_line(void)
 			close(fd);
 		else
 		{
-			report_err("unable to create barrier file '%s'",
+			crondlog(LVL9 "unable to create barrier file '%s'",
 				state->barrier_file);
 		}
 		free(state->barrier_file);
@@ -370,7 +386,7 @@ static int add_line(void)
 	if (fgets(cmdline, sizeof(cmdline), state->curr_file) == NULL)
 	{
 		if (ferror(state->curr_file))
-			report_err("error reading queue file");
+			crondlog(LVL9 "error reading queue file");
 		fclose(state->curr_file);
 		state->curr_file= NULL;
 		return 0;
@@ -436,7 +452,7 @@ static int add_line(void)
 		goto error;
 	}
 	
-	crondlog(LVL7 "found cmd '%s' for '%s'", bp->cmd, cmdline);
+	crondlog(LVL7 "found cmd '%s' for '%s' cronlevel %d", bp->cmd, cmdline, LogLevel);
 
 	len= strlen(cmdline);
 	if (len+1 > ATLAS_ARGSIZE)
@@ -588,7 +604,7 @@ error:
 		{
 			if (rename(filename, filename2) == -1)
 			{
-				report_err("move '%s' to '%s' failed",
+				crondlog(LVL9 "move '%s' to '%s' failed",
 					filename, filename2);
 			}
 		}
@@ -606,7 +622,7 @@ static void cmddone(void *cmdstate, int error UNUSED_PARAM)
 	char to_filename[80];
 	struct stat sb;
 
-	report("command is done for cmdstate %p", cmdstate);
+	crondlog(LVL7 "command is done for cmdstate %p", cmdstate);
 
 	/* Find command */
 	for (i= 0; i<state->max_busy; i++)
@@ -616,7 +632,7 @@ static void cmddone(void *cmdstate, int error UNUSED_PARAM)
 	}
 	if (i >= state->max_busy)
 	{
-		report("cmddone: state state %p", cmdstate);
+		crondlog(LVL7 "cmddone: state state %p", cmdstate);
 		return;
 	}
 	r= state->slots[i].bp->testops->delete(cmdstate);
@@ -626,7 +642,7 @@ static void cmddone(void *cmdstate, int error UNUSED_PARAM)
 		state->curr_busy--;
 	}
 	else
-		report("cmddone: strange, cmd %p is busy", cmdstate);
+		crondlog(LVL7 "cmddone: strange, cmd %p is busy", cmdstate);
 
 	snprintf(from_filename, sizeof(from_filename),
 		"%s/" OOQD_NEW_PREFIX_REL "%s.%d",
@@ -638,13 +654,13 @@ static void cmddone(void *cmdstate, int error UNUSED_PARAM)
 
 	if (stat(to_filename, &sb) == 0)
 	{
-		report("output file '%s' is busy", to_filename);
+		crondlog(LVL7 "output file '%s' is busy", to_filename);
 
 		/* continue, we may have to post */
 	}
 	else if (rename(from_filename, to_filename) == -1)
 	{
-		report_err("move '%s' to '%s' failed",
+		crondlog(LVL9 "move '%s' to '%s' failed",
 			from_filename, to_filename);
 	}
 
@@ -742,7 +758,7 @@ static void post_results(int force_post)
 				need_post= 1;
 			else
 			{
-				report_err("move '%s' to '%s' failed",
+				crondlog(LVL9 "move '%s' to '%s' failed",
 					from_filename, to_filename);
 			}
 		}
@@ -769,7 +785,7 @@ static void post_results(int force_post)
 			need_post= 1;
 			if (rename(from_filename, to_filename) == -1)
 			{
-				report_err("move '%s' to '%s' failed",
+				crondlog(LVL9 "move '%s' to '%s' failed",
 					from_filename, to_filename);
 			}
 		}
@@ -814,7 +830,7 @@ static void post_results(int force_post)
 		free(fn_ooq_sent); fn_ooq_sent= NULL;
 		if (r != 0)
 		{
-			report("httppost failed with %d", r);
+			crondlog(LVL7 "httppost failed with %d", r);
 			return;
 		}
 
@@ -873,31 +889,4 @@ static void find_eos(char *cp, char **ncpp)
 	while (cp[0] != '\0' && cp[0] != '"')
 		cp++;
 	*ncpp= cp;
-}
-
-static void report(const char *fmt, ...)
-{
-	va_list ap;
-
-	va_start(ap, fmt);
-	fprintf(stderr, "ooqd: ");
-	vfprintf(stderr, fmt, ap);
-	fprintf(stderr, "\n");
-
-	va_end(ap);
-}
-
-static void report_err(const char *fmt, ...)
-{
-	int terrno;
-	va_list ap;
-
-	terrno= errno;
-
-	va_start(ap, fmt);
-	fprintf(stderr, "ooqd: ");
-	vfprintf(stderr, fmt, ap);
-	fprintf(stderr, ": %s\n", strerror(terrno));
-
-	va_end(ap);
 }
