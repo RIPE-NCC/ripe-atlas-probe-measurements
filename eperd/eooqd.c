@@ -734,6 +734,7 @@ static void post_results(int force_post)
 	char from_filename[80];
 	char to_filename[80];
 	char url[200];
+	char loglevel[2];
 	struct stat sb;
 
 	for (j= 0; j<5; j++)
@@ -805,6 +806,8 @@ static void post_results(int force_post)
 		snprintf(from_filename, sizeof(from_filename),
 			"%s/" OOQD_OUT_PREFIX_REL "%s",
 			atlas_base(), queue_id);
+		snprintf(loglevel, sizeof(loglevel),
+			"%u", LogLevel);
 
 		fn_header= atlas_path(REPORT_HEADER_REL);
 		fn_session_id= atlas_path(SESSION_ID_REL);
@@ -820,6 +823,8 @@ static void post_results(int force_post)
 		argv[i++]= from_filename;
 		argv[i++]= "--post-footer";
 		argv[i++]= fn_session_id;
+		argv[i++]= "--loglevel";
+		argv[i++]= loglevel;
 		argv[i++]= "-O";
 		argv[i++]= fn_ooq_sent;
 		argv[i++]= url;

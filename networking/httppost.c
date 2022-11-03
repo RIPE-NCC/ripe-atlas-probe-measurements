@@ -30,6 +30,8 @@
 #include <sys/stat.h>
 #include "libbb.h"
 
+#include "../eperd/eperd.h"
+
 //#define SAFE_PREFIX_DATA_OUT ATLAS_DATA_OUT
 #define SAFE_PREFIX_DATA_OUT_REL ATLAS_DATA_OUT_REL
 #define SAFE_PREFIX_DATA_OOQ_OUT ATLAS_DATA_OOQ_OUT
@@ -52,8 +54,13 @@ struct option longopts[]=
 	{ "post-footer", required_argument, NULL, 'f' },
 	{ "set-time", required_argument, NULL, 's' },
 	{ "timeout", required_argument, NULL, 't' },
+	{ "loglevel", required_argument, NULL, 'l' },
 	{ NULL, }
 };
+
+#define INIT_G() do { \
+	LogLevel = 8; \
+} while (0)
 
 static int tcp_fd;
 static struct timeval start_time;
@@ -72,10 +79,6 @@ static int copy_chunked(FILE *in_file, FILE *out_file, int *found_okp);
 static int copy_bytes(FILE *in_file, FILE *out_file, size_t len,
 	int *found_okp);
 static int copy_all(FILE *in_file, FILE *out_file, int *found_okp);
-static void fatal(const char *fmt, ...);
-// static void fatal_err(const char *fmt, ...);
-static void report(const char *fmt, ...);
-static void report_err(const char *fmt, ...);
 static int write_to_tcp_fd (int fd, FILE *tcp_file);
 static void skip_spaces(const char *cp, char **ncp);
 static void got_alarm(int sig);
@@ -88,7 +91,8 @@ int httppost_main(int argc, char *argv[])
 	int opt_delete_file, found_ok;
 	char *url, *host, *port, *hostport, *path, *filelist, *p, *check;
 	char *post_dir, *post_file, *atlas_id, *output_file,
-		*post_footer, *post_header, *maxpostsizestr, *timeoutstr;
+		*post_footer, *post_header, *maxpostsizestr, *timeoutstr,
+		*loglevelstr;
 	char *time_tolerance, *rebased_fn= NULL;
 	char *fn_new, *fn;
 	FILE *tcp_file, *out_file, *fh;
@@ -108,6 +112,7 @@ int httppost_main(int argc, char *argv[])
 	time_tolerance = NULL;
 	maxpostsizestr= NULL;
 	timeoutstr= NULL;
+	loglevelstr= NULL;
 
 	fd= -1;
 	fdH= -1;
@@ -122,6 +127,8 @@ int httppost_main(int argc, char *argv[])
 	path= NULL;
 	filelist= NULL;
 	maxpostsize= 1000000;
+
+	INIT_G();
 
 	/* Allow us to be called directly by another program in busybox */
 	optind= 0;
@@ -159,17 +166,20 @@ int httppost_main(int argc, char *argv[])
 		case 't':				/* --timeout */
 			timeoutstr= optarg;
 			break;
+		case 'l':				/* --loglevel */
+			loglevelstr= optarg;
+			break;
 		case '?':
-			fprintf(stderr, "bad option\n");
+			crondlog(LVL9 "bad option");
 			return 1;
 		default:
-			fatal("bad option '%c'", c);
+			crondlog(DIE9 "bad option '%c'", c);
 		}
 	}
 
 	if (optind != argc-1)
 	{
-		fprintf(stderr, "exactly one url expected\n");
+		crondlog(LVL9 "exactly one url expected");
 		return 1;
 	}
 	url= argv[optind];
@@ -178,7 +188,7 @@ int httppost_main(int argc, char *argv[])
 	{
 		if (!validate_atlas_id(atlas_id))
 		{
-			fprintf(stderr, "bad atlas ID '%s'", atlas_id);
+			crondlog(LVL9 "bad atlas ID '%s'", atlas_id);
 			return 1;
 		}
 	}
@@ -188,7 +198,7 @@ int httppost_main(int argc, char *argv[])
 		maxpostsize= strtoul(maxpostsizestr, &check, 0);
 		if (check[0] != 0)
 		{
-			report("unable to parse maxpostsize '%s'",
+			crondlog(LVL9 "unable to parse maxpostsize '%s'",
 				maxpostsizestr);
 			goto err;
 		}
@@ -199,8 +209,19 @@ int httppost_main(int argc, char *argv[])
 		timeout= strtoul(timeoutstr, &check, 0);
 		if (check[0] != 0)
 		{
-			report("unable to parse timeout '%s'",
+			crondlog(LVL9 "unable to parse timeout '%s'",
 				timeoutstr);
+			goto err;
+		}
+	}
+
+	if (loglevelstr)
+	{
+		LogLevel= (unsigned)strtoul(loglevelstr, &check, 0);
+		if (check[0] != '\0')
+		{
+			crondlog(LVL9 "unable to parse loglevel '%s'\n",
+				loglevelstr);
 			goto err;
 		}
 	}
@@ -211,7 +232,7 @@ int httppost_main(int argc, char *argv[])
 		tolerance= strtoul(time_tolerance, &p, 10);
 		if (p[0] != '\0')
 		{
-			fprintf(stderr, "unable to parse tolerance '%s'\n",
+			crondlog(LVL9 "unable to parse tolerance '%s'\n",
 				time_tolerance);
 			return 1;
 		}
@@ -238,25 +259,25 @@ int httppost_main(int argc, char *argv[])
 		}
 		if (rebased_fn == NULL)
 		{
-			report("protected file (for header) '%s'",
+			crondlog(LVL9 "protected file (for header) '%s'",
 				post_header);
 			goto err;
 		}
 		fdH = open(rebased_fn, O_RDONLY);
 		if(fdH == -1 )
 		{
-			report_err("unable to open header '%s'", rebased_fn);
+			crondlog(LVL9 "unable to open header '%s'", rebased_fn);
 			goto err;
 		}
 		if (fstat(fdH, &sbH) == -1)
 		{
-			report_err("fstat failed on header file '%s'",
+			crondlog(LVL9 "fstat failed on header file '%s'",
 				rebased_fn);
 			goto err;
 		}
 		if (!S_ISREG(sbH.st_mode))
 		{
-			report("'%s' header is not a regular file",
+			crondlog(LVL9 "'%s' header is not a regular file",
 				rebased_fn);
 			goto err;
 		}
@@ -275,26 +296,26 @@ int httppost_main(int argc, char *argv[])
 		}
 		if (rebased_fn == NULL)
 		{
-			report("protected file (for footer) '%s'",
+			crondlog(LVL9 "protected file (for footer) '%s'",
 				post_footer);
 			goto err;
 		}
 		fdF = open(rebased_fn, O_RDONLY);
 		if(fdF == -1 )
 		{
-			report_err("unable to open footer '%s'",
+			crondlog(LVL9 "unable to open footer '%s'",
 				rebased_fn);
 			goto err;
 		}
 		if (fstat(fdF, &sbF) == -1)
 		{
-			report_err("fstat failed on footer file '%s'",
+			crondlog(LVL9 "fstat failed on footer file '%s'",
 				rebased_fn);
 			goto err;
 		}
 		if (!S_ISREG(sbF.st_mode))
 		{
-			report("'%s' footer is not a regular file",
+			crondlog(LVL9 "'%s' footer is not a regular file",
 				rebased_fn);
 			goto err;
 		}
@@ -314,23 +335,23 @@ int httppost_main(int argc, char *argv[])
 		}
 		if (rebased_fn == NULL)
 		{
-			report("protected file (post) '%s'", post_file);
+			crondlog(LVL9 "protected file (post) '%s'", post_file);
 			goto err;
 		}
 		fdS= open(post_file, O_RDONLY);
 		if (fdS == -1)
 		{
-			report_err("unable to open '%s'", rebased_fn);
+			crondlog(LVL9 "unable to open '%s'", rebased_fn);
 			goto err;
 		}
 		if (fstat(fdS, &sbS) == -1)
 		{
-			report_err("fstat failed");
+			crondlog(LVL9 "fstat failed");
 			goto err;
 		}
 		if (!S_ISREG(sbS.st_mode))
 		{
-			report("'%s' is not a regular file", rebased_fn);
+			crondlog(LVL9 "'%s' is not a regular file", rebased_fn);
 			goto err;
 		}
 		free(rebased_fn); rebased_fn= NULL;
@@ -348,7 +369,7 @@ int httppost_main(int argc, char *argv[])
 		}
 		if (rebased_fn == NULL)
 		{
-			report("protected dir (post) '%s'", post_dir);
+			crondlog(LVL9 "protected dir (post) '%s'", post_dir);
 			goto err;
 		}
 		filelist= do_dir(rebased_fn, cLength, maxpostsize, &dir_length);
@@ -358,7 +379,7 @@ int httppost_main(int argc, char *argv[])
 			/* Something went wrong. */
 			goto err;
 		}
-		fprintf(stderr, "total size in dir: %ld\n", (long)dir_length);
+		crondlog(LVL7 "total size in dir: %ld", (long)dir_length);
 		cLength += dir_length;
 	}
 
@@ -374,7 +395,7 @@ int httppost_main(int argc, char *argv[])
 	tcp_fd= connect_to_name(host, port);
 	if (tcp_fd == -1)
 	{
-		report_err("unable to connect to '%s'", host);
+		crondlog(LVL9 "unable to connect to '%s'", host);
 		goto err;
 	}
 
@@ -382,11 +403,11 @@ int httppost_main(int argc, char *argv[])
 	tcp_file= fdopen(tcp_fd, "r+");
 	if (tcp_file == NULL)
 	{
-		report("fdopen failed");
+		crondlog(LVL9 "fdopen failed");
 		goto err;
 	}
 
-	fprintf(stderr, "httppost: sending request\n");
+	crondlog(LVL7 "httppost: sending request");
 	fprintf(tcp_file, "POST %s HTTP/1.1\r\n", path);
 	//fprintf(tcp_file, "GET %s HTTP/1.1\r\n", path);
 	fprintf(tcp_file, "Host: %s\r\n", host);
@@ -427,7 +448,7 @@ int httppost_main(int argc, char *argv[])
 	{
 		for (p= filelist; p[0] != 0; p += strlen(p)+1)
 		{
-			fprintf(stderr, "posting file '%s'\n", p);
+			crondlog(LVL7 "posting file '%s'", p);
 			rebased_fn= rebased_validated_filename(p,
 				SAFE_PREFIX_DATA_OUT_REL);
 			if (rebased_fn == NULL)
@@ -442,13 +463,13 @@ int httppost_main(int argc, char *argv[])
 			}
 			if (rebased_fn == NULL)
 			{
-				report("protected file (post dir) '%s'", p);
+				crondlog(LVL9 "protected file (post dir) '%s'", p);
 				goto err;
 			}
 			fd= open(p, O_RDONLY);
 			if (fd == -1)
 			{
-				report_err("unable to open '%s'",
+				crondlog(LVL9 "unable to open '%s'",
 					rebased_fn);
 				goto err;
 			}
@@ -467,10 +488,10 @@ int httppost_main(int argc, char *argv[])
 			goto err;
 	}
 
-	fprintf(stderr, "httppost: getting result\n");
+	crondlog(LVL7 "httppost: getting result");
 	if (!check_result(tcp_file))
 		goto err;
-	fprintf(stderr, "httppost: getting reply headers \n");
+	crondlog(LVL7 "httppost: getting reply headers");
 	server_time= 0;
 	content_length= -1;
 	if (!eat_headers(tcp_file, &chunked, &content_length, &server_time))
@@ -491,33 +512,33 @@ int httppost_main(int argc, char *argv[])
 			now.tv_sec > server_time+tolerance+rtt);
 		if (need_set_time && getenv("HTTPPOST_ALLOW_STIME"))
 		{
-			fprintf(stderr,
-				"setting time, time difference is %ld\n",
-				(long)server_time-now.tv_sec);
+			crondlog(LVL8
+				"setting time, time difference is %llu",
+				(unsigned long long)server_time-now.tv_sec);
 			ts.tv_sec= server_time;
 			ts.tv_nsec= 0;
 			clock_settime(CLOCK_REALTIME, &ts);
 			if (atlas_id)
 			{
 				printf(
-	"RESULT %s ongoing %ld httppost setting time, local %ld, remote %ld\n",
-					atlas_id, (long)time(NULL),
-					(long)now.tv_sec,
-					(long)server_time);
+	"RESULT %s ongoing %llu httppost setting time, local %llu, remote %llu\n",
+					atlas_id, (unsigned long long)time(NULL),
+					(unsigned long long)now.tv_sec,
+					(unsigned long long)server_time);
 			}
 		}
 		else if (need_set_time)
 		{
-			fprintf(stderr,
-				"not setting time, time difference is %ld\n",
-				(long)server_time-now.tv_sec);
+			crondlog(LVL8
+				"not setting time, time difference is %llu",
+				(unsigned long long)server_time-now.tv_sec);
 			if (atlas_id)
 			{
 				printf(
-	"RESULT %s ongoing %ld httppost not in sync, local %ld, remote %ld\n",
-					atlas_id, (long)time(NULL),
-					(long)now.tv_sec,
-					(long)server_time);
+	"RESULT %s ongoing %llu httppost not in sync, local %llu, remote %llu\n",
+					atlas_id, (unsigned long long)time(NULL),
+					(unsigned long long)now.tv_sec,
+					(unsigned long long)server_time);
 			}
 		}
 		else if (rtt <= 1)
@@ -528,7 +549,7 @@ int httppost_main(int argc, char *argv[])
 			fh= fopen(fn_new, "wt");
 			if (fh)
 			{
-				fprintf(fh, "%ld\n", (long)now.tv_sec);
+				fprintf(fh, "%llu\n", (unsigned long long)now.tv_sec);
 				fclose(fh);
 				rename(fn_new, fn);
 			}
@@ -537,25 +558,25 @@ int httppost_main(int argc, char *argv[])
 		}
 		else if (atlas_id)
 		{
-			printf("RESULT %s ongoing %ld httppost rtt %g ms\n",
-				atlas_id, (long)time(NULL), rtt*1000);
+			printf("RESULT %s ongoing %llu httppost rtt %g ms\n",
+				atlas_id, (unsigned long long)time(NULL), rtt*1000);
 		}
 	}
 
-	fprintf(stderr, "httppost: writing output\n");
+	crondlog(LVL7 "httppost: writing output");
 	if (output_file)
 	{
 		rebased_fn= rebased_validated_filename(output_file,
 			SAFE_PREFIX_DATA_NEW_REL);
 		if (!rebased_fn)
 		{
-			report("protected file (output) '%s'", output_file);
+			crondlog(LVL9 "protected file (output) '%s'", output_file);
 			goto err;
 		}
 		out_file= fopen(rebased_fn, "w");
 		if (!out_file)
 		{
-			report_err("unable to create '%s'", rebased_fn);
+			crondlog(LVL9 "unable to create '%s'", rebased_fn);
 			goto err;
 		}
 		free(rebased_fn); rebased_fn= NULL;
@@ -563,7 +584,7 @@ int httppost_main(int argc, char *argv[])
 	else
 		out_file= stdout;
 
-	fprintf(stderr, "httppost: chunked %d, content_length %d\n",
+	crondlog(LVL7 "httppost: chunked %d, content_length %d",
 		chunked, content_length);
 	found_ok= 0;
 	if (chunked)
@@ -582,17 +603,17 @@ int httppost_main(int argc, char *argv[])
 			goto err;
 	}
 	if (!found_ok)
-		fprintf(stderr, "httppost: reply text was not equal to OK\n");
+		crondlog(LVL8 "httppost: reply text was not equal to OK");
 	if (opt_delete_file == 1  && found_ok)
 	{
-		fprintf(stderr, "httppost: deleting files\n");
+		crondlog(LVL7 "httppost: deleting files");
 		if (post_file)
 		{
 			rebased_fn= rebased_validated_filename(post_file,
 					SAFE_PREFIX_DATA_OUT_REL);
 			if (!rebased_fn)
 			{
-				report("trying to delete protected file '%s'",
+				crondlog(LVL9 "trying to delete protected file '%s'",
 					post_file);
 				goto err;
 			}
@@ -603,13 +624,13 @@ int httppost_main(int argc, char *argv[])
 		{
 			for (p= filelist; p[0] != 0; p += strlen(p)+1)
 			{
-				fprintf(stderr, "unlinking file '%s'\n", p);
+				crondlog(LVL7 "unlinking file '%s'", p);
 				if (unlink(p) != 0)
-					report_err("unable to unlink '%s'", p);
+					crondlog(LVL9 "unable to unlink '%s'", p);
 			}
 		}
 	}
-	fprintf(stderr, "httppost: done\n");
+	crondlog(LVL7 "httppost: done");
 
 	result= 0;
 
@@ -638,7 +659,7 @@ leave:
 	return result; 
 
 err:
-	fprintf(stderr, "httppost: leaving with error\n");
+	crondlog(LVL9 "httppost: leaving with error");
 	result= 1;
 	goto leave;
 }
@@ -653,14 +674,14 @@ static int write_to_tcp_fd (int fd, FILE *tcp_file)
 	{
 		if (fwrite(buffer, r, 1, tcp_file) != 1)
 		{
-			report_err("error writing to tcp connection");
+			crondlog(LVL9 "error writing to tcp connection");
 			return 0;
 		}
 		alarm(10);
 	}
 	if (r == -1)
 	{
-		report_err("error reading from file");
+		crondlog(LVL9 "error reading from file");
 		return 0;
 	}
 	return 1;
@@ -684,7 +705,7 @@ static int parse_url(char *url, char **hostp, char **portp, char **hostportp,
 	len= strlen(prefix);
 	if (strncasecmp(prefix, url, len) != 0)
 	{
-		fprintf(stderr, "bad prefix in url '%s'\n", url);
+		crondlog(LVL9 "bad prefix in url '%s'", url);
 		return -1;
 	}
 
@@ -701,12 +722,12 @@ static int parse_url(char *url, char **hostp, char **portp, char **hostportp,
 	}
 	if (len == 0)
 	{
-		fprintf(stderr, "missing host part in url '%s'\n", url);
+		crondlog(LVL9 "missing host part in url '%s'", url);
 		return -1;
 	}
 
 	item= malloc(len+1);
-	if (!item) fatal("out of memory");
+	if (!item) crondlog(DIE9 "out of memory");
 	memcpy(item, cp, len);
 	item[len]= '\0';
 	*hostportp= item;
@@ -717,7 +738,7 @@ static int parse_url(char *url, char **hostp, char **portp, char **hostportp,
 		cp= "/";
 	len= strlen(cp);
 	item= malloc(len+1);
-	if (!item) fatal("out of memory");
+	if (!item) crondlog(DIE9 "out of memory");
 	memcpy(item, cp, len);
 	item[len]= '\0';
 	*pathp= item;
@@ -731,8 +752,8 @@ static int parse_url(char *url, char **hostp, char **portp, char **hostportp,
 		np= strchr(cp, ']');
 		if (np == NULL || np == cp+1)
 		{
-			fprintf(stderr,
-				"malformed IPv6 address literal in url '%s'\n",
+			crondlog(LVL9
+				"malformed IPv6 address literal in url '%s'",
 				url);
 			goto error;
 		}
@@ -747,11 +768,11 @@ static int parse_url(char *url, char **hostp, char **portp, char **hostportp,
 	}
 	if (len == 0)
 	{
-		fprintf(stderr, "missing host part in url '%s'\n", url);
+		crondlog(LVL9 "missing host part in url '%s'", url);
 		goto error;
 	}
 	item= malloc(len+1);
-	if (!item) fatal("out of memory");
+	if (!item) crondlog(DIE9 "out of memory");
 	if (cp[0] == '[')
 	{
 		/* Leave out the square brackets */
@@ -773,7 +794,7 @@ static int parse_url(char *url, char **hostp, char **portp, char **hostportp,
 		cp++;
 	len= strlen(cp);
 	item= malloc(len+1);
-	if (!item) fatal("out of memory");
+	if (!item) crondlog(DIE9 "out of memory");
 	memcpy(item, cp, len);
 	item[len]= '\0';
 	*portp= item;
@@ -800,17 +821,17 @@ static int check_result(FILE *tcp_file)
 	{
 		if (feof(tcp_file))
 		{
-			report("got unexpected EOF from server");
+			crondlog(LVL9 "got unexpected EOF from server");
 			return 0;
 		}
 		if (errno == EINTR)
 		{
-			report("timeout");
+			crondlog(LVL9 "timeout");
 			sleep(10);
 		}
 		else
 		{
-			report_err("error reading from server");
+			crondlog(LVL9 "error reading from server");
 			return 0;
 		}
 	}
@@ -819,7 +840,7 @@ static int check_result(FILE *tcp_file)
 	cp= strchr(line, '\n');
 	if (cp == NULL)
 	{
-		fprintf(stderr, "line too long\n");
+		crondlog(LVL9 "line too long");
 		return 0;
 	}
 	cp[0]= '\0';
@@ -831,14 +852,14 @@ static int check_result(FILE *tcp_file)
 	len= strlen(prefix);
 	if (strncasecmp(prefix, line, len) != 0)
 	{
-		fprintf(stderr, "bad prefix in response '%s'\n", line);
+		crondlog(LVL9 "bad prefix in response '%s'", line);
 		return 0;
 	}
 	cp= line+len;
 	major= strtoul(cp, &check, 10);
 	if (check == cp || check[0] != '.')
 	{
-		fprintf(stderr, "bad major version in response '%s'\n", line);
+		crondlog(LVL9 "bad major version in response '%s'", line);
 		return 0;
 	}
 	cp= check+1;
@@ -846,7 +867,7 @@ static int check_result(FILE *tcp_file)
 	if (check == cp || check[0] == '\0' ||
 		!isspace(*(unsigned char *)check))
 	{
-		fprintf(stderr, "bad major version in response '%s'\n", line);
+		crondlog(LVL9 "bad major version in response '%s'", line);
 		return 0;
 	}
 
@@ -854,13 +875,13 @@ static int check_result(FILE *tcp_file)
 
 	if (!isdigit(*(unsigned char *)cp))
 	{
-		fprintf(stderr, "bad status code in response '%s'\n", line);
+		crondlog(LVL9 "bad status code in response '%s'", line);
 		return 0;
 	}
 
 	if (cp[0] != '2')
 	{
-		report("POST command failed: '%s'", cp);
+		crondlog(LVL9 "POST command failed: '%s'", cp);
 		return 0;
 	}
 
@@ -881,7 +902,7 @@ static int eat_headers(FILE *tcp_file, int *chunked, int *content_length, time_t
 		cp= strchr(line, '\n');
 		if (cp == NULL)
 		{
-			fprintf(stderr, "line too long\n");
+			crondlog(LVL9 "line too long");
 			return 0;
 		}
 		cp[0]= '\0';
@@ -891,7 +912,7 @@ static int eat_headers(FILE *tcp_file, int *chunked, int *content_length, time_t
 		if (line[0] == '\0')
 			return 1;		/* End of headers */
 
-		fprintf(stderr, "httppost: got line '%s'\n", line);
+		crondlog(LVL7 "httppost: got line '%s'", line);
 
 		if (strncmp(line, "Date: ", 6) == 0)
 		{
@@ -901,7 +922,7 @@ static int eat_headers(FILE *tcp_file, int *chunked, int *content_length, time_t
 			cp= strptime(line+6, "%a, %d %b %Y %H:%M:%S ", &tm);
 			if (!cp || strcmp(cp, "GMT") != 0)
 			{
-				fprintf(stderr, "unable to parse time '%s'\n",
+				crondlog(LVL9 "unable to parse time '%s'",
 					line+6);
 			}
 			*timep= timegm(&tm);
@@ -929,7 +950,7 @@ static int eat_headers(FILE *tcp_file, int *chunked, int *content_length, time_t
 
 			if (cp[0] != ':')
 			{
-				fprintf(stderr,
+				crondlog(LVL9
 					"malformed transfer-encoding header");
 				return 0;
 			}
@@ -961,7 +982,7 @@ static int eat_headers(FILE *tcp_file, int *chunked, int *content_length, time_t
 
 		if (cp[0] != ':')
 		{
-			fprintf(stderr, "malformed content-length header");
+			crondlog(LVL9 "malformed content-length header");
 			return 0;
 		}
 		cp++;
@@ -973,7 +994,7 @@ static int eat_headers(FILE *tcp_file, int *chunked, int *content_length, time_t
 		*content_length= strtoul(cp, &check, 10);
 		if (check == cp)
 		{
-			fprintf(stderr, "malformed content-length header\n");
+			crondlog(LVL9 "malformed content-length header");
 			return 0;
 		}
 
@@ -983,14 +1004,14 @@ static int eat_headers(FILE *tcp_file, int *chunked, int *content_length, time_t
 
 		if (cp[0] != '\0')
 		{
-			fprintf(stderr, "malformed content-length header\n");
+			crondlog(LVL9 "malformed content-length header");
 			return 0;
 		}
 	}
 	if (feof(tcp_file))
-		report("got unexpected EOF from server");
+		crondlog(LVL9 "got unexpected EOF from server");
 	else
-		report_err("error reading from server");
+		crondlog(LVL9 "error reading from server");
 	return 0;
 }
 
@@ -1000,13 +1021,13 @@ static int connect_to_name(char *host, char *port)
 	struct addrinfo *res, *aip;
 	struct addrinfo hints;
 
-	fprintf(stderr, "httppost: before getaddrinfo\n");
+	crondlog(LVL5 "httppost: before getaddrinfo");
 	memset(&hints, '\0', sizeof(hints));
 	hints.ai_socktype= SOCK_STREAM;
 	r= getaddrinfo(host, port, &hints, &res);
 	if (r != 0)
 	{
-		fprintf(stderr, "unable to resolve '%s': %s\n",
+		crondlog(LVL9 "unable to resolve '%s': %s",
 			host, gai_strerror(r));
 		errno= ENOENT;	/* Need something */
 		return -1;
@@ -1023,7 +1044,7 @@ static int connect_to_name(char *host, char *port)
 			continue;
 		}
 
-		fprintf(stderr, "httppost: before connect\n");
+		crondlog(LVL5 "httppost: before connect");
 		if (connect(s, res->ai_addr, res->ai_addrlen) == 0)
 			break;
 
@@ -1059,7 +1080,7 @@ char *do_dir(char *dir_name, off_t curr_tot_size, off_t max_size, off_t *lenp)
 	dir= opendir(dir_name);
 	if (dir == NULL)
 	{
-		report_err("opendir failed for '%s'", dir_name);
+		crondlog(LVL9 "opendir failed for '%s'", dir_name);
 		return NULL;
 	}
 
@@ -1075,7 +1096,7 @@ char *do_dir(char *dir_name, off_t curr_tot_size, off_t max_size, off_t *lenp)
 			if (!tmplist)
 			{
 				free(list);
-				report("realloc failed for %d bytes",
+				crondlog(LVL9 "realloc failed for %d bytes",
 					allocsize);
 				closedir(dir);
 				return NULL;
@@ -1090,7 +1111,7 @@ char *do_dir(char *dir_name, off_t curr_tot_size, off_t max_size, off_t *lenp)
 
 		if (stat(path, &sb) != 0)
 		{
-			report_err("stat '%s' failed", path);
+			crondlog(LVL9 "stat '%s' failed", path);
 			free(list);
 			closedir(dir);
 			return NULL;
@@ -1105,7 +1126,7 @@ char *do_dir(char *dir_name, off_t curr_tot_size, off_t max_size, off_t *lenp)
 			if (sb.st_size > max_size/2)
 			{
 				/* File just too big in general */
-				report("deleting file '%s', size %d",
+				crondlog(LVL9 "deleting file '%s', size %d",
 					path, sb.st_size);
 				unlink(path);
 			}
@@ -1132,7 +1153,7 @@ char *do_dir(char *dir_name, off_t curr_tot_size, off_t max_size, off_t *lenp)
 		if (!tmplist)
 		{
 			free(list);
-			report("realloc failed for %d bytes", allocsize);
+			crondlog(LVL9 "realloc failed for %d bytes", allocsize);
 			return NULL;
 		}
 		list= tmplist;
@@ -1159,7 +1180,7 @@ static int copy_chunked(FILE *in_file, FILE *out_file, int *found_okp)
 		/* Get a chunk size */
 		if (fgets(buffer, sizeof(buffer), in_file) == NULL)
 		{
-			report("error reading input");
+			crondlog(LVL9 "error reading input");
 			return 0;
 		}
 
@@ -1167,18 +1188,18 @@ static int copy_chunked(FILE *in_file, FILE *out_file, int *found_okp)
 		cp= strchr(line, '\n');
 		if (cp == NULL)
 		{
-			fprintf(stderr, "line too long");
+			crondlog(LVL9 "line too long");
 			return 0;
 		}
 		cp[0]= '\0';
 		if (cp > line && cp[-1] == '\r')
 			cp[-1]= '\0';
 
-		fprintf(stderr, "httppost: got chunk line '%s'\n", line);
+		crondlog(LVL7 "httppost: got chunk line '%s'", line);
 		len= strtoul(line, &check, 16);
 		if (check[0] != '\0' && !isspace(*(unsigned char *)check))
 		{
-			fprintf(stderr, "bad chunk line '%s'", line);
+			crondlog(LVL9 "bad chunk line '%s'", line);
 			return 0;
 		}
 		if (!len)
@@ -1193,17 +1214,17 @@ static int copy_chunked(FILE *in_file, FILE *out_file, int *found_okp)
 				size= sizeof(buffer);
 			if (fread(buffer, size, 1, in_file) != 1)
 			{
-				report_err("error reading input");
+				crondlog(LVL9 "error reading input");
 				return 0;
 			}
 			if (fwrite(buffer, size, 1, out_file) != 1)
 			{
-				fprintf(stderr, "error writing output");
+				crondlog(LVL9 "error writing output");
 				return 0;
 			}
 			offset += size;
 
-			fprintf(stderr, "httppost: chunk data '%.*s'\n", 
+			crondlog(LVL7 "httppost: chunk data '%.*s'", 
 				(int)size, buffer);
 			for (i= 0; i<size; i++)
 			{
@@ -1221,7 +1242,7 @@ static int copy_chunked(FILE *in_file, FILE *out_file, int *found_okp)
 		/* Expect empty line after data */
 		if (fgets(buffer, sizeof(buffer), in_file) == NULL)
 		{
-			report("error reading input");
+			crondlog(LVL9 "error reading input");
 			return 0;
 		}
 
@@ -1229,7 +1250,7 @@ static int copy_chunked(FILE *in_file, FILE *out_file, int *found_okp)
 		cp= strchr(line, '\n');
 		if (cp == NULL)
 		{
-			fprintf(stderr, "line too long");
+			crondlog(LVL9 "line too long");
 			return 0;
 		}
 		cp[0]= '\0';
@@ -1237,7 +1258,7 @@ static int copy_chunked(FILE *in_file, FILE *out_file, int *found_okp)
 			cp[-1]= '\0';
 		if (line[0] != '\0')
 		{
-			fprintf(stderr, "Garbage after chunk data");
+			crondlog(LVL9 "Garbage after chunk data");
 			return 0;
 		}
 	}
@@ -1247,7 +1268,7 @@ static int copy_chunked(FILE *in_file, FILE *out_file, int *found_okp)
 		/* Get an end-of-chunk line */
 		if (fgets(buffer, sizeof(buffer), in_file) == NULL)
 		{
-			report("error reading input");
+			crondlog(LVL9 "error reading input");
 			return 0;
 		}
 
@@ -1255,7 +1276,7 @@ static int copy_chunked(FILE *in_file, FILE *out_file, int *found_okp)
 		cp= strchr(line, '\n');
 		if (cp == NULL)
 		{
-			fprintf(stderr, "line too long");
+			crondlog(LVL9 "line too long");
 			return 0;
 		}
 		cp[0]= '\0';
@@ -1264,7 +1285,7 @@ static int copy_chunked(FILE *in_file, FILE *out_file, int *found_okp)
 		if (line[0] == '\0')
 			break;
 
-		fprintf(stderr, "httppost: got end-of-chunk line '%s'\n", line);
+		crondlog(LVL5 "httppost: got end-of-chunk line '%s'", line);
 	}
 	*found_okp= (okp != NULL && *okp == '\0');
 	return 1;
@@ -1288,17 +1309,17 @@ static int copy_bytes(FILE *in_file, FILE *out_file, size_t len, int *found_okp)
 			size= sizeof(buffer);
 		if (fread(buffer, size, 1, in_file) != 1)
 		{
-			report_err("error reading input");
+			crondlog(LVL9 "error reading input");
 			return 0;
 		}
 		if (fwrite(buffer, size, 1, out_file) != 1)
 		{
-			report_err("error writing output");
+			crondlog(LVL9 "error writing output");
 			return 0;
 		}
 		offset += size;
 
-		fprintf(stderr, "httppost: normal data '%.*s'\n", 
+		crondlog(LVL7 "httppost: normal data '%.*s'", 
 				(int)size, buffer);
 
 		for (i= 0; i<size; i++)
@@ -1332,11 +1353,11 @@ static int copy_all(FILE *in_file, FILE *out_file, int *found_okp)
 			break;
 		if (fwrite(buffer, size, 1, out_file) != 1)
 		{
-			report_err("error writing output");
+			crondlog(LVL9 "error writing output");
 			return 0;
 		}
 
-		fprintf(stderr, "httppost: all data '%.*s'\n", 
+		crondlog(LVL7 "httppost: all data '%.*s'", 
 				(int)size, buffer);
 
 		for (i= 0; i<size; i++)
@@ -1353,7 +1374,7 @@ static int copy_all(FILE *in_file, FILE *out_file, int *found_okp)
 	}
 	if  (ferror(in_file))
 	{
-		report_err("error reading input");
+		crondlog(LVL9 "error reading input");
 		return 0;
 	}
 	*found_okp= (okp != NULL && *okp == '\0');
@@ -1374,11 +1395,11 @@ static void got_alarm(int sig __attribute__((unused)) )
 {
 	if (tcp_fd != -1 && time(NULL) > start_time.tv_sec+timeout)
 	{
-		report("setting tcp_fd to nonblock");
+		crondlog(LVL7 "setting tcp_fd to nonblock");
 		fcntl(tcp_fd, F_SETFL, fcntl(tcp_fd, F_GETFL) | O_NONBLOCK);
 	}
 	kick_watchdog();
-	report("got alarm, setting alarm again");
+	crondlog(LVL7 "got alarm, setting alarm again");
 	alarm(1);
 }
 
@@ -1390,68 +1411,4 @@ static void kick_watchdog(void)
 		write(fdwatchdog, "1", 1);
 		close(fdwatchdog);
 	}
-}
-
-static void fatal(const char *fmt, ...)
-{
-	va_list ap;
-
-	va_start(ap, fmt);
-
-	fprintf(stderr, "httppost: ");
-	vfprintf(stderr, fmt, ap);
-	fprintf(stderr, "\n");
-
-	va_end(ap);
-
-	exit(1);
-}
-
-#if 0
-static void fatal_err(const char *fmt, ...)
-{
-	int s_errno;
-	va_list ap;
-
-	s_errno= errno;
-
-	va_start(ap, fmt);
-
-	fprintf(stderr, "httppost: ");
-	vfprintf(stderr, fmt, ap);
-	fprintf(stderr, ": %s\n", strerror(s_errno));
-
-	va_end(ap);
-
-	exit(1);
-}
-#endif
-
-static void report(const char *fmt, ...)
-{
-	va_list ap;
-
-	va_start(ap, fmt);
-
-	fprintf(stderr, "httppost: ");
-	vfprintf(stderr, fmt, ap);
-	fprintf(stderr, "\n");
-
-	va_end(ap);
-}
-
-static void report_err(const char *fmt, ...)
-{
-	int s_errno;
-	va_list ap;
-
-	s_errno= errno;
-
-	va_start(ap, fmt);
-
-	fprintf(stderr, "httppost: ");
-	vfprintf(stderr, fmt, ap);
-	fprintf(stderr, ": %s\n", strerror(s_errno));
-
-	va_end(ap);
 }
