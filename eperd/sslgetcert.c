@@ -611,6 +611,29 @@ static void add_compression(struct hsbuf *hsbuf)
 	hsbuf_add(hsbuf, compression, len);
 }
 
+static void ext_ec_point_formats(struct hsbuf *hsbuf)
+{
+	/*
+	  The EC Point Format extension contains one octet of length,
+	  followed by a series of one-octet values of entries in the
+	  EC Point Format registry.
+	*/
+	uint16_t epfextlen;
+	uint8_t epflen;
+	size_t len;
+	uint8_t point_formats[]= { 0x0 /* uncompressed */ };
+
+	len = sizeof(point_formats);
+
+	epflen = len;
+	epfextlen = 1 + len;
+
+	hsbuf_add_u16(hsbuf, 11 /*ec_point_formats*/);
+	hsbuf_add_u16(hsbuf, epfextlen);
+	hsbuf_add(hsbuf, &epflen, sizeof(epflen));
+	hsbuf_add(hsbuf, point_formats, len);
+}
+
 static void ext_sigs(struct hsbuf *hsbuf)
 {
 	uint16_t sigextlen, siglen;
@@ -682,17 +705,31 @@ static void sni(struct hsbuf *hsbuf, const char *server_name)
 	hsbuf_add(hsbuf, server_name, size_hostname);
 }
 
+/* Only add EC point format extension for TLS versions 1.0, 1.1, and 1.2 */
+static int ec_point_ext_ok(const struct state *state) {
+	return (state->major_version == 3) &&
+		(state->minor_version >= 1) &&
+		(state->minor_version <= 3);
+}
+
 static void add_extensions(struct state *state, struct hsbuf *hsbuf)
 {
 	size_t size_extensions;
 	struct hsbuf ext_sigs_buf;
 	struct hsbuf sni_buf;
+	struct hsbuf ec_point_formats_buf;
 	struct hsbuf elliptic_curves_buf;
 
 	/* SNI */
 	hsbuf_init(&sni_buf);
 	if (state->sni)
 		sni(&sni_buf, state->sni);
+
+	/* EC point format */
+        if (ec_point_ext_ok(state)) {
+		hsbuf_init(&ec_point_formats_buf);
+		ext_ec_point_formats(&ec_point_formats_buf);
+        }
 
 	/* Signatures */
 	hsbuf_init(&ext_sigs_buf);
@@ -702,12 +739,20 @@ static void add_extensions(struct state *state, struct hsbuf *hsbuf)
 	hsbuf_init(&elliptic_curves_buf);
 	elliptic_curves(&elliptic_curves_buf);
 
-	size_extensions= hsbuf_len(&sni_buf) + hsbuf_len(&ext_sigs_buf) +
+	size_extensions= hsbuf_len(&sni_buf) +
+		hsbuf_len(&ext_sigs_buf) +
 		hsbuf_len(&elliptic_curves_buf);
+
+        if (ec_point_ext_ok(state))
+		size_extensions += hsbuf_len(&ec_point_formats_buf);
 
 	hsbuf_add_u16(hsbuf, size_extensions);
 	hsbuf_copy(hsbuf, &sni_buf);
 	hsbuf_cleanup(&sni_buf);
+        if (ec_point_ext_ok(state)) {
+		hsbuf_copy(hsbuf, &ec_point_formats_buf);
+		hsbuf_cleanup(&ec_point_formats_buf);
+        }
 	hsbuf_copy(hsbuf, &ext_sigs_buf);
 	hsbuf_cleanup(&ext_sigs_buf);
 	hsbuf_copy(hsbuf, &elliptic_curves_buf);
