@@ -1,7 +1,10 @@
 #
 # Kbuild ignores
+.config.old
+.kconfig.d
+.kernelrelease
+.*.cmd
 #
-.*
 *.o
 *.o.*
 *.a
