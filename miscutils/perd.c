@@ -876,7 +876,7 @@ static void RunJobs(void)
 			kick_watchdog();
 
 			RunJob(file->cf_User, line);
-			crondlog(LVL8 "USER %s pid %3d cmd %s",
+			crondlog(LVL7 "USER %s pid %3d cmd %s",
 				file->cf_User, (int)line->cl_Pid, line->cl_Shell);
 			if (line->cl_Pid < 0) {
 				file->cf_Ready = 1;
